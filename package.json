@@ -1,0 +1,40 @@
+{
+  "name": "dsh-workers",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Standalone stdio MCP server and Claude Code skill for running DeepSeek Harness (dsh) headless workers in parallel",
+  "type": "module",
+  "bin": {
+    "dsh-workers": "./dist/server.js"
+  },
+  "files": [
+    "dist",
+    "skill"
+  ],
+  "engines": {
+    "node": ">=24"
+  },
+  "packageManager": "pnpm@10.11.0",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Cesar-M-Diaz/dsh-workers.git"
+  },
+  "scripts": {
+    "build": "tsc -b",
+    "typecheck": "tsc -b",
+    "start": "node dist/server.js",
+    "test": "tsc -b && vitest run",
+    "lint": "biome check .",
+    "format": "biome format --write ."
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "1.31.0",
+    "zod": "4.6.5"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "2.5.15",
+    "@types/node": "^24.0.0",
+    "typescript": "7.0.2",
+    "vitest": "5.0.3"
+  }
+}
