@@ -59,6 +59,13 @@ Start it in the background and open a browser:
 node dist/ui.js --detach --open
 ```
 
+Control the background dashboard:
+
+```sh
+node dist/ui.js --status
+node dist/ui.js --stop
+```
+
 Focus one job:
 
 ```sh
@@ -163,7 +170,7 @@ Commands installed under `~/.claude/commands/`:
 | `/dsh-cancel <job>` | Cancel a queued or running worker. |
 | `/dsh-cleanup <job>` | Clean up a terminal worktree. |
 | `/dsh-delete <job>` | Delete a terminal job record and its files. |
-| `/dsh-ui` | Open the live dashboard. |
+| `/dsh-ui [start\|stop\|status\|restart]` | Control the live dashboard. |
 | `/dsh-watch <job>` | Open the dashboard focused on one job. |
 
 Custom Claude commands are prompt templates: they instruct Claude to call the

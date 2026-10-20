@@ -19,6 +19,8 @@ interface CliOptions {
   open: boolean;
   detach: boolean;
   serve: boolean;
+  stop: boolean;
+  status: boolean;
   job?: string;
   help: boolean;
   version: boolean;
@@ -44,6 +46,8 @@ function parseArgs(args: readonly string[]): CliOptions {
     open: true,
     detach: false,
     serve: false,
+    stop: false,
+    status: false,
     help: false,
     version: false,
   };
@@ -73,6 +77,12 @@ function parseArgs(args: readonly string[]): CliOptions {
       case '--serve':
         options.serve = true;
         break;
+      case '--stop':
+        options.stop = true;
+        break;
+      case '--status':
+        options.status = true;
+        break;
       case '--help':
       case '-h':
         options.help = true;
@@ -99,6 +109,8 @@ Options:
   --job <id>   Open the dashboard focused on one job
   --no-open    Do not open a browser
   --detach     Start a background dashboard and return
+  --stop       Stop the dashboard process for this port
+  --status     Report whether the dashboard is running
   --serve      Internal: run the server in the foreground
   --help       Show this help
   --version    Show the version
@@ -340,17 +352,62 @@ function statusUrl(port: number, job?: string): string {
   return job === undefined ? base : `${base}#${encodeURIComponent(job)}`;
 }
 
-async function probeDashboard(port: number): Promise<boolean> {
+interface DashboardHealth {
+  name: string;
+  version: string;
+  state_dir: string;
+  retention_days: number;
+  pid: number;
+}
+
+async function dashboardHealth(port: number): Promise<DashboardHealth | undefined> {
   try {
     const response = await fetch(`http://${HOST}:${port}/api/health`, {
       signal: AbortSignal.timeout(800),
     });
-    if (!response.ok) return false;
-    const body = (await response.json()) as { name?: string };
-    return body.name === 'dsh-workers-ui';
+    if (!response.ok) return undefined;
+    const body = (await response.json()) as DashboardHealth;
+    return body.name === 'dsh-workers-ui' ? body : undefined;
   } catch {
-    return false;
+    return undefined;
   }
+}
+
+async function probeDashboard(port: number): Promise<boolean> {
+  return (await dashboardHealth(port)) !== undefined;
+}
+
+async function printDashboardStatus(port: number): Promise<void> {
+  const health = await dashboardHealth(port);
+  if (!health) {
+    process.stdout.write(`stopped http://${HOST}:${port}/\n`);
+    return;
+  }
+  process.stdout.write(
+    `running http://${HOST}:${port}/ pid=${health.pid} version=${health.version} retention=${health.retention_days}d\n`,
+  );
+}
+
+async function stopDashboard(port: number): Promise<void> {
+  const health = await dashboardHealth(port);
+  if (!health) {
+    process.stdout.write(`stopped http://${HOST}:${port}/\n`);
+    return;
+  }
+  try {
+    process.kill(health.pid, 'SIGTERM');
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code !== 'ESRCH') throw err;
+  }
+  const deadline = Date.now() + 5000;
+  while (Date.now() < deadline) {
+    if (!(await probeDashboard(port))) {
+      process.stdout.write(`stopped http://${HOST}:${port}/\n`);
+      return;
+    }
+    await delay(100);
+  }
+  throw new Error(`dashboard pid ${health.pid} did not stop within 5 seconds`);
 }
 
 async function waitForDashboard(port: number, timeoutMs = 5000): Promise<boolean> {
@@ -445,6 +502,17 @@ async function main(): Promise<void> {
   }
   if (options.version) {
     process.stdout.write(`${VERSION}\n`);
+    return;
+  }
+  if (options.stop && options.status) {
+    throw new Error('--stop and --status cannot be combined');
+  }
+  if (options.status) {
+    await printDashboardStatus(options.port);
+    return;
+  }
+  if (options.stop) {
+    await stopDashboard(options.port);
     return;
   }
   if (options.detach) {
