@@ -69,6 +69,7 @@ describe('JobManager', () => {
       defaultTimeoutMs: 60_000,
       maxTimeoutMs: 60_000,
       maxDepth: 2,
+      retentionDays: 7,
       useDshCredentials: false,
       credentialsFile: join(root, 'credentials.yaml'),
       envAllow: ['PATH', 'HOME', 'LANG', 'TERM', 'TMPDIR'],
@@ -86,12 +87,19 @@ describe('JobManager', () => {
   });
 
   it('starts asynchronously, queues past the concurrency cap, and returns final text', async () => {
-    const first = await manager.start({ task: 'first', access: 'read-only' });
+    const first = await manager.start({
+      task: 'first',
+      access: 'read-only',
+      group_id: 'group-test',
+      group_name: 'Group test',
+    });
     const second = await manager.start({ task: 'second', access: 'read-only' });
     await delay(50);
-    const status = manager.statusOutput([first.job_id, second.job_id]);
+    const status = await manager.statusOutput([first.job_id, second.job_id]);
     expect(status.server.running).toBe(1);
     expect(status.server.queued).toBe(1);
+    expect(status.server.group_id).toBe(manager.groupStatus().group_id);
+    expect(status.jobs.some((job) => job.group_name === 'Group test')).toBe(true);
     expect(status.jobs.some((job) => job.status === 'queued')).toBe(true);
 
     const waited = await manager.wait([first.job_id, second.job_id], 'all', 10_000);

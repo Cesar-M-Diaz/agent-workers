@@ -19,6 +19,9 @@ describe('dashboard API', () => {
       JSON.stringify({
         id: 'j_test',
         label: 'test worker',
+        groupId: 'g_ui',
+        groupName: 'UI test session',
+        ownerId: 'owner_ui',
         status: 'running',
         cwd: '/tmp',
         access: 'read-only',
@@ -38,6 +41,25 @@ describe('dashboard API', () => {
         JSON.stringify({ type: 'tool_call', tool: 'bash', input: { command: 'pwd' } }),
       ].join('\n'),
     );
+    const doneDir = join(root, 'jobs', 'j_done');
+    await mkdir(doneDir, { recursive: true });
+    await writeFile(
+      join(doneDir, 'job.json'),
+      JSON.stringify({
+        id: 'j_done',
+        label: 'done worker',
+        groupId: 'g_ui',
+        groupName: 'UI test session',
+        ownerId: 'owner_ui',
+        status: 'succeeded',
+        cwd: '/tmp',
+        access: 'read-only',
+        isolation: 'none',
+        createdAt: new Date().toISOString(),
+        finishedAt: new Date().toISOString(),
+      }),
+    );
+    await writeFile(join(doneDir, 'events.ndjson'), '');
     server = createDashboardServer(root);
     await new Promise<void>((done) => server.listen(0, '127.0.0.1', done));
     const address = server.address() as AddressInfo;
@@ -57,8 +79,16 @@ describe('dashboard API', () => {
     const body = (await fetch(`${baseUrl}/api/jobs`).then((response) => response.json())) as {
       jobs: Array<{ id: string; label: string; status: string }>;
     };
-    expect(body.jobs).toHaveLength(1);
-    expect(body.jobs[0]).toMatchObject({ id: 'j_test', label: 'test worker', status: 'running' });
+    expect(body.jobs).toHaveLength(2);
+    expect(body.jobs).toContainEqual(
+      expect.objectContaining({
+        id: 'j_test',
+        label: 'test worker',
+        status: 'running',
+        group_id: 'g_ui',
+        group_name: 'UI test session',
+      }),
+    );
   });
 
   it('returns cursor-based live events', async () => {
@@ -77,6 +107,19 @@ describe('dashboard API', () => {
       `${baseUrl}/api/jobs/j_test/events?cursor=${first.next_cursor}&limit=10`,
     ).then((response) => response.json())) as { events: Array<{ type: string }> };
     expect(second.events.map((event) => event.type)).toEqual(['tool_call']);
+  });
+
+  it('refuses to delete active jobs and deletes terminal records', async () => {
+    const active = await fetch(`${baseUrl}/api/jobs/j_test`, { method: 'DELETE' });
+    expect(active.status).toBe(409);
+    expect(await active.json()).toMatchObject({ error: 'job_active' });
+
+    const done = await fetch(`${baseUrl}/api/jobs/j_done`, { method: 'DELETE' });
+    expect(done.status).toBe(200);
+    expect(await done.json()).toMatchObject({ job_id: 'j_done', deleted: true });
+
+    const missing = await fetch(`${baseUrl}/api/jobs/j_done`, { method: 'DELETE' });
+    expect(missing.status).toBe(404);
   });
 
   it('serves the dashboard HTML', async () => {

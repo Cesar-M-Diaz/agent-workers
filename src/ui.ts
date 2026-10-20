@@ -4,7 +4,8 @@ import { readFile } from 'node:fs/promises';
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
 import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { resolveWorkerStateDir } from './config.js';
+import { deleteJobRecord, JobAdminError, pruneExpiredJobs } from './admin.js';
+import { loadConfig } from './config.js';
 import { listDashboardJobs } from './dashboard.js';
 import { readEventPage } from './events.js';
 import { VERSION } from './version.js';
@@ -21,6 +22,11 @@ interface CliOptions {
   job?: string;
   help: boolean;
   version: boolean;
+}
+
+export interface DashboardOptions {
+  retentionDays?: number;
+  pruneIntervalMs?: number;
 }
 
 function parsePort(raw: string | undefined): number {
@@ -141,6 +147,7 @@ async function streamDashboard(
   req: IncomingMessage,
   res: ServerResponse,
   stateDir: string,
+  retentionDays: number,
   url: URL,
 ): Promise<void> {
   const jobId = url.searchParams.get('job_id');
@@ -167,7 +174,12 @@ async function streamDashboard(
     try {
       const jobs = await listDashboardJobs(stateDir);
       sendSse(res, 'jobs', {
-        server: { name: 'dsh-workers-ui', version: VERSION, state_dir: stateDir },
+        server: {
+          name: 'dsh-workers-ui',
+          version: VERSION,
+          state_dir: stateDir,
+          retention_days: retentionDays,
+        },
         jobs,
       });
 
@@ -195,15 +207,41 @@ async function streamDashboard(
   if (!res.writableEnded) res.end();
 }
 
-export function createDashboardServer(stateDir: string): Server {
-  return createServer((req, res) => {
+export function createDashboardServer(stateDir: string, options: DashboardOptions = {}): Server {
+  const retentionDays = options.retentionDays ?? 0;
+  const server = createServer((req, res) => {
     void (async () => {
       try {
+        const url = new URL(req.url ?? '/', `http://${HOST}`);
+        const deleteMatch = /^\/api\/jobs\/([^/]+)$/.exec(url.pathname);
+        if (deleteMatch && req.method === 'DELETE') {
+          const jobId = decodeURIComponent(deleteMatch[1]!);
+          if (!isSafeJobId(jobId)) {
+            writeError(res, 400, 'invalid job id');
+            return;
+          }
+          const discard = ['1', 'true', 'yes'].includes(
+            (url.searchParams.get('discard_changes') ?? '').toLowerCase(),
+          );
+          try {
+            writeJson(
+              res,
+              200,
+              await deleteJobRecord(stateDir, jobId, { discardChanges: discard }),
+            );
+          } catch (err) {
+            if (err instanceof JobAdminError) {
+              writeJson(res, err.status, { error: err.code, message: err.message, ...err.details });
+            } else {
+              throw err;
+            }
+          }
+          return;
+        }
         if (req.method !== 'GET') {
           writeError(res, 405, 'method not allowed');
           return;
         }
-        const url = new URL(req.url ?? '/', `http://${HOST}`);
         if (url.pathname === '/') {
           const html = await readFile(DASHBOARD_HTML, 'utf8');
           res.writeHead(200, {
@@ -221,19 +259,25 @@ export function createDashboardServer(stateDir: string): Server {
             name: 'dsh-workers-ui',
             version: VERSION,
             state_dir: stateDir,
+            retention_days: retentionDays,
             pid: process.pid,
           });
           return;
         }
         if (url.pathname === '/api/jobs') {
           writeJson(res, 200, {
-            server: { name: 'dsh-workers-ui', version: VERSION, state_dir: stateDir },
+            server: {
+              name: 'dsh-workers-ui',
+              version: VERSION,
+              state_dir: stateDir,
+              retention_days: retentionDays,
+            },
             jobs: await listDashboardJobs(stateDir),
           });
           return;
         }
         if (url.pathname === '/api/stream') {
-          await streamDashboard(req, res, stateDir, url);
+          await streamDashboard(req, res, stateDir, retentionDays, url);
           return;
         }
 
@@ -268,6 +312,25 @@ export function createDashboardServer(stateDir: string): Server {
       }
     })();
   });
+
+  if (retentionDays > 0) {
+    let pruning = false;
+    const prune = async (): Promise<void> => {
+      if (pruning) return;
+      pruning = true;
+      try {
+        await pruneExpiredJobs(stateDir, retentionDays);
+      } finally {
+        pruning = false;
+      }
+    };
+    void prune();
+    const timer = setInterval(() => void prune(), options.pruneIntervalMs ?? 15 * 60 * 1000);
+    timer.unref();
+    server.once('close', () => clearInterval(timer));
+  }
+
+  return server;
 }
 
 function statusUrl(port: number, job?: string): string {
@@ -323,8 +386,9 @@ async function listen(server: Server, port: number): Promise<void> {
 }
 
 async function startForeground(options: CliOptions): Promise<void> {
-  const stateDir = await resolveWorkerStateDir();
-  const server = createDashboardServer(stateDir);
+  const config = await loadConfig();
+  const stateDir = config.stateDir;
+  const server = createDashboardServer(stateDir, { retentionDays: config.retentionDays });
   await listen(server, options.port);
   const url = statusUrl(options.port, options.job);
   process.stdout.write(`dsh-workers ui ${VERSION}\n${url}\nstate: ${stateDir}\n`);

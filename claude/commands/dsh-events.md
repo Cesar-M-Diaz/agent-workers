@@ -3,7 +3,7 @@ description: Read live step events from a DSH worker
 argument-hint: <job_id> [cursor]
 allowed-tools: mcp__dsh-workers__dsh_events
 ---
-Call the `dsh_events` MCP tool.
+Call the `dsh_events` MCP tool using the supplied or already-known job id.
 
 Arguments: $ARGUMENTS
 
@@ -13,4 +13,4 @@ another page size.
 
 Summarize the event timeline by type and phase. Show tool names and short
 tool-result previews, but do not dump large inputs or outputs. Always report the
-returned `next_cursor` so the user can request only new events next time.
+returned `next_cursor` so the next call can read only new events.

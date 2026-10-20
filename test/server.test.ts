@@ -128,7 +128,7 @@ describe('MCP server', () => {
     await rm(root, { recursive: true, force: true });
   });
 
-  it('initializes, lists the seven tools, and runs a worker', async () => {
+  it('initializes, lists the nine tools, and runs a worker', async () => {
     const init = await rpc.request('initialize', {
       protocolVersion: '2025-06-18',
       capabilities: {},
@@ -143,7 +143,9 @@ describe('MCP server', () => {
     expect(names).toEqual([
       'dsh_cancel',
       'dsh_cleanup',
+      'dsh_delete',
       'dsh_events',
+      'dsh_group',
       'dsh_result',
       'dsh_start',
       'dsh_status',
@@ -152,10 +154,16 @@ describe('MCP server', () => {
 
     const started = await rpc.request('tools/call', {
       name: 'dsh_start',
-      arguments: { task: 'hello' },
+      arguments: { task: 'hello', group_id: 'g_test', group_name: 'Test group' },
     });
-    const startPayload = toolPayload(started) as { job_id: string };
+    const startPayload = toolPayload(started) as {
+      job_id: string;
+      group_id: string;
+      group_name: string;
+    };
     expect(startPayload.job_id).toMatch(/^j_/);
+    expect(startPayload.group_id).toBe('g_test');
+    expect(startPayload.group_name).toBe('Test group');
 
     const waited = await rpc.request('tools/call', {
       name: 'dsh_wait',
@@ -181,5 +189,17 @@ describe('MCP server', () => {
     };
     expect(eventPayload.events.map((event) => event.type)).toEqual(['session', 'status', 'final']);
     expect(eventPayload.next_cursor).toBe(3);
+
+    const group = await rpc.request('tools/call', {
+      name: 'dsh_group',
+      arguments: { group_id: 'g_next', group_name: 'Next group' },
+    });
+    expect(toolPayload(group)).toMatchObject({ group_id: 'g_next', group_name: 'Next group' });
+
+    const deleted = await rpc.request('tools/call', {
+      name: 'dsh_delete',
+      arguments: { job_id: startPayload.job_id },
+    });
+    expect(toolPayload(deleted)).toMatchObject({ job_id: startPayload.job_id, deleted: true });
   });
 });

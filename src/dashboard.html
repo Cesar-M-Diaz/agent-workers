@@ -104,7 +104,29 @@
       font: 11px var(--mono);
     }
     .count strong { color: var(--text); font-weight: 600; }
-    .job-list { overflow-y: auto; padding: 2px 10px 16px; display: flex; flex-direction: column; gap: 5px; }
+    .sidebar-note { padding: 0 16px 11px; color: var(--faint); font: 10px var(--mono); }
+    .job-list { overflow-y: auto; padding: 0 10px 16px; display: flex; flex-direction: column; gap: 2px; }
+    .job-group { display: flex; flex-direction: column; gap: 3px; margin-top: 7px; }
+    .group-head {
+      display: flex;
+      align-items: center;
+      gap: 7px;
+      width: 100%;
+      padding: 5px 7px;
+      border: 0;
+      border-radius: 6px;
+      background: transparent;
+      color: var(--muted);
+      text-align: left;
+      cursor: pointer;
+      font: 10px var(--mono);
+    }
+    .group-head:hover { background: rgba(255,255,255,.03); color: var(--text); }
+    .group-caret { width: 9px; color: var(--faint); }
+    .group-name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .group-count { color: var(--faint); }
+    .group-jobs { display: flex; flex-direction: column; gap: 3px; margin-left: 6px; padding-left: 5px; border-left: 1px solid var(--border); }
+    .group-jobs[hidden] { display: none; }
     .job-item {
       width: 100%;
       padding: 11px 11px 10px;
@@ -185,6 +207,18 @@
     .status-pill.succeeded { color: var(--ok); border-color: color-mix(in srgb, var(--ok) 38%, var(--border)); }
     .status-pill.failed, .status-pill.timed_out, .status-pill.interrupted { color: var(--error); border-color: color-mix(in srgb, var(--error) 38%, var(--border)); }
     .status-pill.queued { color: var(--warn); }
+    .job-actions { display: flex; align-items: center; flex: 0 0 auto; gap: 8px; }
+    .delete-btn {
+      padding: 6px 10px;
+      border: 1px solid color-mix(in srgb, var(--error) 35%, var(--border));
+      border-radius: 8px;
+      background: transparent;
+      color: var(--error);
+      cursor: pointer;
+      font: 10px var(--mono);
+    }
+    .delete-btn:hover:not(:disabled) { background: color-mix(in srgb, var(--error) 12%, transparent); }
+    .delete-btn:disabled { color: var(--faint); border-color: var(--border); cursor: not-allowed; }
     .meta { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 15px; }
     .meta-item {
       display: flex;
@@ -324,6 +358,7 @@
             <div class="count" title="total"><strong id="total-count">0</strong> all</div>
           </div>
         </div>
+        <div class="sidebar-note" id="retention-note">Loading retention policy…</div>
         <div class="job-list" id="job-list"></div>
       </aside>
       <main class="content">
@@ -341,7 +376,10 @@
                 <h2 class="job-title" id="job-title">Selected job</h2>
                 <div class="job-id-row"><span id="job-id"></span><button class="copy" id="copy-id" type="button">copy</button></div>
               </div>
-              <span class="status-pill" id="job-status"></span>
+              <div class="job-actions">
+                <span class="status-pill" id="job-status"></span>
+                <button class="delete-btn" id="delete-job" type="button" title="Delete this job">Delete</button>
+              </div>
             </div>
             <div class="meta" id="job-meta"></div>
           </div>
@@ -368,6 +406,8 @@
       source: null,
       connected: false,
       autoSelectDone: false,
+      retentionDays: 0,
+      collapsedGroups: new Set(),
     };
 
     const $ = (id) => document.getElementById(id);
@@ -426,34 +466,89 @@
       return sum > 0 ? sum : null;
     }
 
+    function renderRetention() {
+      const note = $('retention-note');
+      note.textContent = state.retentionDays > 0
+        ? 'Terminal jobs auto-delete after ' + state.retentionDays + 'd'
+        : 'Automatic job deletion disabled';
+    }
+
     function renderCounts() {
       const active = state.jobs.filter((job) => activeStatus(job.status)).length;
       $('active-count').textContent = String(active);
       $('total-count').textContent = String(state.jobs.length);
     }
 
+    function groupKey(job) {
+      return job.group_id || 'legacy';
+    }
+
+    function groupedJobs() {
+      const groups = new Map();
+      for (const job of state.jobs) {
+        const key = groupKey(job);
+        if (!groups.has(key)) {
+          groups.set(key, {
+            id: key,
+            name: job.group_name || 'Legacy / ungrouped',
+            jobs: [],
+            active: false,
+          });
+        }
+        const group = groups.get(key);
+        group.jobs.push(job);
+        group.active = group.active || activeStatus(job.status);
+      }
+      return [...groups.values()].sort((a, b) => {
+        const activeOrder = Number(b.active) - Number(a.active);
+        return activeOrder !== 0 ? activeOrder : a.name.localeCompare(b.name);
+      });
+    }
+
     function renderJobs() {
       const previousScroll = jobList.scrollTop;
       jobList.replaceChildren();
-      for (const job of state.jobs) {
-        const status = safeStatus(job.status);
-        const button = el('button', 'job-item' + (job.id === state.selected ? ' selected' : ''));
-        button.type = 'button';
-        button.dataset.jobId = job.id;
-        button.addEventListener('click', () => selectJob(job.id));
+      for (const group of groupedJobs()) {
+        const section = el('section', 'job-group');
+        const head = el('button', 'group-head');
+        head.type = 'button';
+        head.title = group.id;
+        const collapsed = state.collapsedGroups.has(group.id);
+        head.append(el('span', 'group-caret', collapsed ? '▸' : '▾'));
+        if (group.active) head.append(el('span', 'status-dot running'));
+        head.append(el('span', 'group-name', group.name));
+        head.append(el('span', 'group-count', String(group.jobs.length)));
+        head.addEventListener('click', () => {
+          if (state.collapsedGroups.has(group.id)) state.collapsedGroups.delete(group.id);
+          else state.collapsedGroups.add(group.id);
+          renderJobs();
+        });
+        section.append(head);
 
-        const top = el('div', 'job-item-top');
-        top.append(el('span', 'status-dot ' + status));
-        top.append(el('span', 'job-label', job.label || job.id));
-        top.append(el('span', 'job-status', status.replace('_', ' ')));
-        button.append(top);
+        const body = el('div', 'group-jobs');
+        body.hidden = collapsed;
+        for (const job of group.jobs) {
+          const status = safeStatus(job.status);
+          const button = el('button', 'job-item' + (job.id === state.selected ? ' selected' : ''));
+          button.type = 'button';
+          button.dataset.jobId = job.id;
+          button.addEventListener('click', () => selectJob(job.id));
 
-        const sub = el('div', 'job-sub');
-        sub.append(el('span', '', job.steps + ' steps'));
-        sub.append(el('span', '', job.tool_calls + ' tools'));
-        sub.append(el('span', 'grow', formatElapsed(job.elapsed_s)));
-        button.append(sub);
-        jobList.append(button);
+          const top = el('div', 'job-item-top');
+          top.append(el('span', 'status-dot ' + status));
+          top.append(el('span', 'job-label', job.label || job.id));
+          top.append(el('span', 'job-status', status.replace('_', ' ')));
+          button.append(top);
+
+          const sub = el('div', 'job-sub');
+          sub.append(el('span', '', job.steps + ' steps'));
+          sub.append(el('span', '', job.tool_calls + ' tools'));
+          sub.append(el('span', 'grow', formatElapsed(job.elapsed_s)));
+          button.append(sub);
+          body.append(button);
+        }
+        section.append(body);
+        jobList.append(section);
       }
       jobList.scrollTop = previousScroll;
       renderCounts();
@@ -497,6 +592,11 @@
       if (job.worktree) addMeta('worktree', job.worktree.branch || job.worktree.path, job.worktree.path);
       addMeta('started', formatTime(job.started_at));
       addMeta('last event', formatTime(job.last_event_at));
+      const deleteButton = $('delete-job');
+      deleteButton.disabled = activeStatus(job.status);
+      deleteButton.title = deleteButton.disabled
+        ? 'Active jobs cannot be deleted'
+        : 'Delete this job record';
     }
 
     function makeCard(event) {
@@ -626,6 +726,8 @@
         renderJobHeader();
         return;
       }
+      const selected = state.jobs.find((job) => job.id === jobId);
+      if (selected) state.collapsedGroups.delete(groupKey(selected));
       state.selected = jobId;
       state.events = [];
       state.seen.clear();
@@ -668,6 +770,8 @@
       source.addEventListener('jobs', (message) => {
         const payload = JSON.parse(message.data);
         state.jobs = Array.isArray(payload.jobs) ? payload.jobs : [];
+        state.retentionDays = Number(payload.server?.retention_days) || 0;
+        renderRetention();
         renderJobs();
         renderJobHeader();
         chooseDefaultJob();
@@ -692,6 +796,53 @@
       source.addEventListener('stream_error', () => setLive(false));
     }
 
+    async function deleteSelectedJob(discardChanges) {
+      const job = selectedJob();
+      if (!job) return;
+      if (activeStatus(job.status)) {
+        alert('Active jobs cannot be deleted.');
+        return;
+      }
+      if (!discardChanges) {
+        const message = job.worktree
+          ? 'Delete job ' + job.id + '?\n\nA clean worktree will be removed. Dirty changes are preserved unless you confirm again.'
+          : 'Delete job ' + job.id + ' and its logs?';
+        if (!confirm(message)) return;
+      }
+      let response;
+      try {
+        response = await fetch(
+          '/api/jobs/' + encodeURIComponent(job.id) + '?discard_changes=' + (discardChanges ? '1' : '0'),
+          { method: 'DELETE' },
+        );
+      } catch (err) {
+        alert('Delete failed: ' + err);
+        return;
+      }
+      let body = {};
+      try { body = await response.json(); } catch { /* keep empty body */ }
+      if (response.status === 409 && body.error === 'worktree_dirty') {
+        if (confirm('The worktree has uncommitted changes. Delete the job and discard those changes?')) {
+          await deleteSelectedJob(true);
+        }
+        return;
+      }
+      if (!response.ok) {
+        alert(body.message || ('Delete failed with HTTP ' + response.status));
+        return;
+      }
+      state.jobs = state.jobs.filter((item) => item.id !== job.id);
+      state.selected = null;
+      state.events = [];
+      state.seen.clear();
+      state.autoSelectDone = false;
+      history.replaceState(null, '', location.pathname);
+      renderJobs();
+      renderJobHeader();
+      renderTimeline();
+      connect();
+    }
+
     $('copy-id').addEventListener('click', async () => {
       if (!state.selected) return;
       try {
@@ -702,6 +853,8 @@
         $('copy-id').textContent = 'failed';
       }
     });
+    $('delete-job').addEventListener('click', () => void deleteSelectedJob(false));
+
     for (const id of ['show-tools', 'show-thinking', 'show-text']) {
       $(id).addEventListener('change', renderTimeline);
     }

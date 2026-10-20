@@ -8,7 +8,8 @@ and is not part of N|Solid or NodeSource.
 
 The server uses one `dsh --profile headless --json` process per job. It provides
 a bounded FIFO queue, wall-clock timeouts, process-group cancellation, optional
-git worktree isolation, and artifact-based results.
+git worktree isolation, session grouping, artifact-based results, and automatic
+retention for terminal jobs.
 
 ```text
 Claude Code / Codex
@@ -64,9 +65,11 @@ Focus one job:
 node dist/ui.js --detach --open --job j_abc123
 ```
 
-The dashboard shows the job list, status, steps, tool calls, thinking, assistant
-text, tool results, final answer, usage, and elapsed time. Cancellation and
-worktree cleanup remain MCP operations.
+The dashboard groups jobs by parent session, shows status, steps, tool calls,
+thinking, assistant text, tool results, final answer, usage, and elapsed time.
+Terminal jobs can be deleted from the job header. A dirty worktree requires a
+second confirmation before its changes are discarded. Cancellation remains an
+MCP operation.
 
 The dashboard is not the DSH TUI side panel. The TUI side panel belongs to an
 interactive DSH session; these workers are separate headless DSH processes.
@@ -159,6 +162,7 @@ Commands installed under `~/.claude/commands/`:
 | `/dsh-result <job>` | Read final answer, tails, and worktree changes. |
 | `/dsh-cancel <job>` | Cancel a queued or running worker. |
 | `/dsh-cleanup <job>` | Clean up a terminal worktree. |
+| `/dsh-delete <job>` | Delete a terminal job record and its files. |
 | `/dsh-ui` | Open the live dashboard. |
 | `/dsh-watch <job>` | Open the dashboard focused on one job. |
 
@@ -168,6 +172,24 @@ server can also expose MCP prompts, but these named Markdown commands provide
 clean `/dsh-*` names.
 
 Restart Claude Code or start a new session after installing commands.
+
+## Job lifecycle and deletion
+
+- A terminal job record is kept for `DSH_WORKERS_RETENTION_DAYS` days
+  (default `7`).
+- Automatic retention never deletes a job with a dirty worktree. Those records
+  stay until the user reviews them.
+- The dashboard's **Delete** button deletes a terminal job and its logs.
+- If the job has a clean worktree, deleting the job also removes the worktree
+  and branch.
+- If the worktree is dirty, the first delete attempt is refused; confirming the
+  discard prompt deletes the worktree and branch with force.
+- `dsh_cleanup` only cleans a worktree; `dsh_delete` removes the job record.
+- Active or queued jobs cannot be deleted.
+
+The skill should pass the stable `group_id` and `group_name` on every
+`dsh_start`, and should reuse every returned `job_id` for status, events, result,
+cancel, cleanup, and delete calls instead of asking the user to type ids.
 
 ## Configuration
 
@@ -186,6 +208,9 @@ DSH home, patches, or unrestricted permissions.
 | `DSH_WORKERS_DEFAULT_TIMEOUT_S` | `1200` | Default per-job wall clock. |
 | `DSH_WORKERS_MAX_TIMEOUT_S` | `3600` | Tool argument ceiling. |
 | `DSH_WORKERS_MAX_DEPTH` | `2` | Recursion guard through `DSH_WORKERS_DEPTH`. |
+| `DSH_WORKERS_RETENTION_DAYS` | `7` | Delete terminal job records after this many days; `0` disables. |
+| `DSH_WORKERS_SESSION_ID` | MCP instance id | Default parent-session id for new jobs. |
+| `DSH_WORKERS_SESSION_NAME` | current directory name | Default parent-session display name. |
 | `DSH_WORKERS_USE_DSH_CREDENTIALS` | off | Read `DEEPSEEK_API_KEY` from the configured credential file. |
 | `DSH_WORKERS_CREDENTIALS_FILE` | `~/.dsh/.credentials.yaml` | Used only when the credential opt-in is on. |
 | `DSH_WORKERS_ENV_ALLOW` | empty | Extra environment variable names allowed into workers. |
@@ -202,13 +227,15 @@ home, but the fallback state is temporary.
 
 ## MCP tools
 
-- `dsh_start`: start a worker and return a job id immediately.
+- `dsh_start`: start a worker and return a job id immediately; accepts `group_id` and `group_name`.
+- `dsh_group`: read or set the parent-session group used by new jobs.
 - `dsh_status`: inspect running and queued jobs.
 - `dsh_wait`: wait for any or all jobs, with a bounded timeout.
 - `dsh_result`: read the final answer, stderr tail, and worktree diff.
 - `dsh_events`: read a cursor-based page of live NDJSON events.
 - `dsh_cancel`: cancel a queued or running job.
 - `dsh_cleanup`: remove a finished worktree and branch.
+- `dsh_delete`: delete a terminal job record, logs, and its clean worktree.
 
 ## Security boundary
 

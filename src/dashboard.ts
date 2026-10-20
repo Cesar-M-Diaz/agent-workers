@@ -5,6 +5,9 @@ import { join } from 'node:path';
 interface PersistedJobFile {
   id?: string;
   label?: string;
+  groupId?: string;
+  groupName?: string;
+  ownerId?: string;
   status?: string;
   reason?: string;
   cwd?: string;
@@ -31,6 +34,9 @@ interface PersistedJobFile {
 export interface DashboardJob {
   id: string;
   label: string;
+  group_id: string;
+  group_name: string;
+  owner_id: string;
   status: string;
   reason?: string;
   cwd: string;
@@ -106,6 +112,17 @@ export async function listDashboardJobs(stateDir: string): Promise<DashboardJob[
     jobs.push({
       id: saved.id,
       label: typeof saved.label === 'string' && saved.label.trim() ? saved.label : saved.id,
+      group_id:
+        typeof saved.groupId === 'string' && saved.groupId.trim()
+          ? saved.groupId
+          : typeof saved.ownerId === 'string' && saved.ownerId.trim()
+            ? saved.ownerId
+            : 'legacy',
+      group_name:
+        typeof saved.groupName === 'string' && saved.groupName.trim()
+          ? saved.groupName
+          : 'Legacy / ungrouped',
+      owner_id: typeof saved.ownerId === 'string' ? saved.ownerId : 'unknown',
       status,
       ...(typeof saved.reason === 'string' ? { reason: saved.reason } : {}),
       cwd: typeof saved.cwd === 'string' ? saved.cwd : '',
@@ -146,6 +163,8 @@ export async function listDashboardJobs(stateDir: string): Promise<DashboardJob[
   return jobs.sort((a, b) => {
     const activeOrder = Number(isActive(b.status)) - Number(isActive(a.status));
     if (activeOrder !== 0) return activeOrder;
+    const groupOrder = a.group_name.localeCompare(b.group_name);
+    if (groupOrder !== 0) return groupOrder;
     return b.created_at.localeCompare(a.created_at);
   });
 }

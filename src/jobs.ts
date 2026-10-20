@@ -1,9 +1,10 @@
 import type { ChildProcessWithoutNullStreams } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { createWriteStream, type Dirent, type WriteStream } from 'node:fs';
-import { mkdir, readdir, readFile, stat, writeFile } from 'node:fs/promises';
-import { join } from 'node:path';
+import { access, mkdir, readdir, readFile, stat, writeFile } from 'node:fs/promises';
+import { basename, join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
+import { deleteJobRecord, JobAdminError, pruneExpiredJobs } from './admin.js';
 import type { Config } from './config.js';
 import { resolveApiKey } from './config.js';
 import { readEventPage } from './events.js';
@@ -47,6 +48,9 @@ export class JobError extends Error {
 interface Job {
   id: string;
   label?: string;
+  groupId: string;
+  groupName: string;
+  ownerId: string;
   task: string;
   cwd: string;
   access: AccessMode;
@@ -86,6 +90,9 @@ interface Job {
 interface PersistedJob {
   id: string;
   label?: string;
+  groupId?: string;
+  groupName?: string;
+  ownerId?: string;
   cwd: string;
   access: AccessMode;
   isolation: Isolation;
@@ -130,6 +137,9 @@ function persisted(job: Job): PersistedJob {
   return {
     id: job.id,
     label: job.label,
+    groupId: job.groupId,
+    groupName: job.groupName,
+    ownerId: job.ownerId,
     cwd: job.cwd,
     access: job.access,
     isolation: job.isolation,
@@ -176,6 +186,9 @@ function fromPersisted(saved: PersistedJob): Job {
   return {
     id: saved.id,
     label: saved.label,
+    groupId: saved.groupId ?? saved.ownerId ?? 'legacy',
+    groupName: saved.groupName ?? 'Legacy / ungrouped',
+    ownerId: saved.ownerId ?? 'unknown',
     task: '',
     cwd: saved.cwd,
     access: saved.access,
@@ -212,16 +225,25 @@ export class JobManager {
   private readonly running = new Set<string>();
   private readonly writeLocks = new Map<string, string>();
   private readonly sessionLocks = new Map<string, string>();
+  private readonly ownerId = randomUUID();
+  private readonly ownerStartedAt = new Date().toISOString();
+  private defaultGroupId: string;
+  private defaultGroupName: string;
   private dispatchScheduled = false;
   private shuttingDown = false;
   private dshVersion = 'unavailable';
   private apiKey?: string;
   private readyPromise?: Promise<void>;
 
-  constructor(private readonly config: Config) {}
+  constructor(private readonly config: Config) {
+    this.defaultGroupId = process.env.DSH_WORKERS_SESSION_ID?.trim() || this.ownerId;
+    this.defaultGroupName =
+      process.env.DSH_WORKERS_SESSION_NAME?.trim() || basename(process.cwd()) || 'dsh-workers';
+  }
 
   async init(): Promise<void> {
     await mkdir(join(this.config.stateDir, 'jobs'), { recursive: true, mode: 0o700 });
+    await pruneExpiredJobs(this.config.stateDir, this.config.retentionDays);
     this.apiKey = await resolveApiKey(this.config);
     const version = await runCapture(this.config.dshBin, ['--version'], { timeoutMs: 10_000 });
     this.dshVersion = version.code === 0 ? version.stdout.trim() : 'unavailable';
@@ -265,7 +287,8 @@ export class JobManager {
     }
   }
 
-  statusOutput(jobIds?: readonly string[]): StatusOutput {
+  async statusOutput(jobIds?: readonly string[]): Promise<StatusOutput> {
+    await this.pruneDeletedJobs();
     const jobs = this.selectJobs(jobIds).map((job) => this.summary(job));
     return {
       server: {
@@ -275,6 +298,10 @@ export class JobManager {
         running: this.running.size,
         queued: this.queue.length,
         state_dir: this.config.stateDir,
+        group_id: this.defaultGroupId,
+        group_name: this.defaultGroupName,
+        owner_id: this.ownerId,
+        retention_days: this.config.retentionDays,
       },
       jobs,
     };
@@ -291,6 +318,33 @@ export class JobManager {
       const message = err instanceof Error ? err.message : String(err);
       throw new JobError('cwd_outside_roots', message);
     }
+  }
+
+  groupStatus(): {
+    group_id: string;
+    group_name: string;
+    owner_id: string;
+    owner_started_at: string;
+  } {
+    return {
+      group_id: this.defaultGroupId,
+      group_name: this.defaultGroupName,
+      owner_id: this.ownerId,
+      owner_started_at: this.ownerStartedAt,
+    };
+  }
+
+  setGroup(input: { group_id?: string; group_name?: string }): {
+    group_id: string;
+    group_name: string;
+    owner_id: string;
+    owner_started_at: string;
+  } {
+    const groupId = input.group_id?.trim();
+    const groupName = input.group_name?.trim();
+    if (groupId) this.defaultGroupId = groupId;
+    if (groupName) this.defaultGroupName = groupName;
+    return this.groupStatus();
   }
 
   async start(input: StartInput): Promise<StartResult> {
@@ -320,6 +374,8 @@ export class JobManager {
     let worktree: WorktreeInfo | undefined;
     let sessionId: string | undefined;
     let resumeOf: string | undefined;
+    let groupId = input.group_id?.trim();
+    let groupName = input.group_name?.trim();
 
     if (input.resume_job_id) {
       if (
@@ -364,6 +420,8 @@ export class JobManager {
       worktree = original.worktree;
       sessionId = original.sessionId;
       resumeOf = original.id;
+      groupId ??= original.groupId;
+      groupName ??= original.groupName;
       if (access === 'workspace-write' && isolation === 'none') {
         const conflict = [...this.writeLocks.entries()].find(([, jobId]) => {
           const other = this.jobs.get(jobId);
@@ -402,12 +460,17 @@ export class JobManager {
     }
 
     if (sessionId) this.sessionLocks.set(sessionId, id);
+    const resolvedGroupId = groupId ?? this.defaultGroupId;
+    const resolvedGroupName = groupName ?? this.defaultGroupName;
 
     const dir = join(this.config.stateDir, 'jobs', id);
     await mkdir(dir, { recursive: true, mode: 0o700 });
     const job: Job = {
       id,
       label: input.label,
+      groupId: resolvedGroupId,
+      groupName: resolvedGroupName,
+      ownerId: this.ownerId,
       task: input.task,
       cwd,
       access,
@@ -435,6 +498,8 @@ export class JobManager {
     return {
       job_id: id,
       status: job.status,
+      group_id: job.groupId,
+      group_name: job.groupName,
       ...(job.status === 'queued' ? { queue_position: queuePosition } : {}),
       cwd: job.cwd,
       worktree: job.worktree
@@ -659,7 +724,7 @@ export class JobManager {
   async cancel(
     jobId: string,
   ): Promise<{ job_id: string; status: JobStatus; killed_pids: number[]; survivors: number[] }> {
-    const job = this.mustGet(jobId);
+    const job = await this.requireJob(jobId);
     if (job.terminal) throw new JobError('already_settled', 'job is already settled');
     job.cancelReason = 'cancelled';
     if (job.status === 'queued') {
@@ -691,7 +756,7 @@ export class JobManager {
     timeoutMs: number,
     signal?: AbortSignal,
   ): Promise<WaitOutput> {
-    const jobs = jobIds.map((id) => this.mustGet(id));
+    const jobs = await Promise.all(jobIds.map((id) => this.requireJob(id)));
     const started = Date.now();
     let aborted = false;
     while (true) {
@@ -730,7 +795,7 @@ export class JobManager {
   }
 
   async events(jobId: string, cursor: number, limit: number): Promise<Record<string, unknown>> {
-    const job = this.mustGet(jobId);
+    const job = await this.requireJob(jobId);
     const page = await readEventPage(job.eventsPath, cursor, limit);
     return {
       job_id: job.id,
@@ -746,7 +811,7 @@ export class JobManager {
     maxChars: number,
     include: ReadonlySet<string>,
   ): Promise<Record<string, unknown>> {
-    const job = this.mustGet(jobId);
+    const job = await this.requireJob(jobId);
     let final = job.finalText;
     if (final === undefined) {
       try {
@@ -794,7 +859,7 @@ export class JobManager {
     jobId: string,
     discardChanges: boolean,
   ): Promise<{ job_id: string; worktree: string; branch_deleted: boolean }> {
-    const job = this.mustGet(jobId);
+    const job = await this.requireJob(jobId);
     if (!job.terminal) throw new JobError('not_terminal', 'cannot clean up a non-terminal job');
     if (!job.worktree || job.cleaned)
       return { job_id: job.id, worktree: 'none', branch_deleted: false };
@@ -806,6 +871,22 @@ export class JobManager {
       worktree: result.worktree,
       branch_deleted: result.branchDeleted,
     };
+  }
+
+  async delete(
+    jobId: string,
+    discardChanges: boolean,
+  ): Promise<{ job_id: string; deleted: true; worktree: string; branch_deleted: boolean }> {
+    const job = await this.requireJob(jobId);
+    if (!job.terminal) throw new JobError('not_terminal', 'cannot delete a non-terminal job');
+    try {
+      const result = await deleteJobRecord(this.config.stateDir, jobId, { discardChanges });
+      this.jobs.delete(jobId);
+      return result;
+    } catch (err) {
+      if (err instanceof JobAdminError) throw new JobError(err.code, err.message);
+      throw err;
+    }
   }
 
   async shutdown(): Promise<void> {
@@ -868,6 +949,9 @@ export class JobManager {
     return {
       job_id: job.id,
       label: job.label,
+      group_id: job.groupId,
+      group_name: job.groupName,
+      owner_id: job.ownerId,
       status: job.status,
       reason: job.reason,
       access: job.access,
@@ -901,6 +985,34 @@ export class JobManager {
   private selectJobs(ids?: readonly string[]): Job[] {
     if (ids !== undefined) return ids.map((id) => this.mustGet(id));
     return [...this.jobs.values()].sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+  }
+
+  private async pruneDeletedJobs(): Promise<void> {
+    for (const [id, job] of this.jobs) {
+      if (!job.terminal) continue;
+      try {
+        await access(job.jobPath);
+      } catch (err) {
+        if ((err as NodeJS.ErrnoException).code === 'ENOENT') this.jobs.delete(id);
+      }
+    }
+  }
+
+  private async requireJob(id: string): Promise<Job> {
+    const job = this.jobs.get(id);
+    if (!job) throw new JobError('unknown_job', `unknown job ${id}`);
+    if (job.terminal) {
+      try {
+        await access(job.jobPath);
+      } catch (err) {
+        if ((err as NodeJS.ErrnoException).code === 'ENOENT') {
+          this.jobs.delete(id);
+          throw new JobError('unknown_job', `unknown job ${id}`);
+        }
+        throw err;
+      }
+    }
+    return job;
   }
 
   private mustGet(id: string): Job {

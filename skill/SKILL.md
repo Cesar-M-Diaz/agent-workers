@@ -11,15 +11,17 @@ description: >
 
 # DSH parallel workers
 
-The `dsh-workers` MCP server exposes seven tools:
+The `dsh-workers` MCP server exposes nine tools:
 
-- `dsh_start`: start a worker and return a job id immediately.
+- `dsh_start`: start a worker and return a job id immediately; accepts `group_id` and `group_name`.
+- `dsh_group`: read or set the parent-session group used by new jobs.
 - `dsh_status`: inspect running and queued jobs.
 - `dsh_wait`: wait for any or all jobs, with a bounded timeout.
 - `dsh_result`: read the final answer, stderr tail, and worktree diff.
 - `dsh_events`: read live NDJSON events from a cursor (`next_cursor`).
 - `dsh_cancel`: cancel a queued or running job.
-- `dsh_cleanup`: remove a finished worktree and branch.
+- `dsh_cleanup`: remove a finished worktree and branch without deleting the job record.
+- `dsh_delete`: delete a terminal job record, logs, and a clean worktree/branch.
 
 A worker is a separate DSH agent. It does not see this conversation, the parent
 chat history, or files you read but did not mention. Every task must be
@@ -87,19 +89,42 @@ Final response:
 4. Open questions or risks
 ```
 
+## Session grouping and ids
+
+Jobs are grouped in the dashboard by `group_id` and `group_name`. Treat these as
+the parent Claude session, not as the DSH worker session id.
+
+Before the first delegation in a conversation:
+
+1. Call `dsh_group` with no arguments to read the current default group.
+2. If `group_name` is generic (for example, just a repository name) or does not
+   describe the current work, call `dsh_group` with a concise 3-6 word
+   `group_name`. Reuse the returned `group_id` and `group_name`.
+3. Always pass both `group_id` and `group_name` to every `dsh_start`, including
+   jobs in later turns of the same conversation.
+4. If the user explicitly provides a session/group id or name, use those values.
+
+Keep every returned `job_id` and pass it automatically to `dsh_status`,
+`dsh_wait`, `dsh_result`, `dsh_events`, `dsh_cancel`, `dsh_cleanup`, and
+`dsh_delete`. Do not ask the user to repeat or type ids that the conversation
+already contains.
+
 ## Parallel workflow
 
 1. Split the request into independent jobs with non-overlapping ownership.
-2. Call `dsh_start` once per job. Use a short `label`.
+2. Read or set the session group with `dsh_group`, then call `dsh_start` once per
+   job, always passing the same `group_id` and `group_name`. Use a short `label`.
 3. Use `read-only` unless the job must write files.
 4. For writing jobs, use `access: "workspace-write"` with
    `isolation: "worktree"`.
 5. Continue useful parent work instead of busy-polling.
-6. Call `dsh_wait` with `mode: "any"` or `"all"` and a moderate timeout. A wait
-   timeout does not cancel jobs.
-7. Call `dsh_result` for each settled job.
+6. Call `dsh_wait` with the returned job ids, `mode: "any"` or `"all"`, and a
+   moderate timeout. A wait timeout does not cancel jobs.
+7. Call `dsh_result` for each settled job using its job id.
 8. Verify the result before reporting it.
-9. Call `dsh_cleanup` only when the worktree is no longer needed.
+9. Keep terminal jobs when their worktree is needed for review. Delete them with
+   `dsh_delete` after review; clean work with `dsh_cleanup` only when the job
+   record should remain.
 
 Start a small batch first. The server enforces its own concurrency and queue
 limits, so do not try to bypass them.
@@ -115,6 +140,18 @@ Do not claim these workers appear in Claude's native subagent panel or the DSH
 TUI side panel. They are separate DSH headless processes. To inspect them
 visually, use the global `/dsh-ui` command, which opens the standalone
 `dsh-workers` dashboard, or `/dsh-watch <job_id>` to focus one job.
+
+## Lifecycle and deletion
+
+Terminal job records are retained for seven days by default and then removed by
+the background retention sweep. Dirty worktrees are never deleted automatically.
+
+Use `dsh_delete` only after the result and diff have been reviewed. It removes
+the record and logs, and removes a clean worktree/branch. If the worktree is
+dirty, first ask the user whether to preserve or discard the changes; only then
+retry with `discard_changes: true`. `dsh_cleanup` is for removing a worktree
+while keeping the job record. The dashboard exposes the same terminal-job
+deletion action.
 
 ## Required review
 

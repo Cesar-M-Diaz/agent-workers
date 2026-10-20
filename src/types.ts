@@ -64,6 +64,9 @@ export interface WorktreeChanges {
 export interface JobSummary {
   job_id: string;
   label?: string;
+  group_id: string;
+  group_name: string;
+  owner_id: string;
   status: JobStatus;
   reason?: string;
   access: AccessMode;
@@ -87,6 +90,8 @@ export interface JobSummary {
 export interface StartInput {
   task: string;
   label?: string;
+  group_id?: string;
+  group_name?: string;
   cwd?: string;
   access?: AccessMode;
   isolation?: Isolation;
@@ -98,6 +103,8 @@ export interface StartInput {
 export interface StartResult {
   job_id: string;
   status: JobStatus;
+  group_id: string;
+  group_name: string;
   queue_position?: number;
   cwd: string;
   worktree: { path: string; branch: string; base_commit: string } | null;
@@ -111,6 +118,10 @@ export interface StatusOutput {
     running: number;
     queued: number;
     state_dir: string;
+    group_id: string;
+    group_name: string;
+    owner_id: string;
+    retention_days: number;
   };
   jobs: JobSummary[];
 }

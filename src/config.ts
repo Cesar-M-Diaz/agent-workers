@@ -14,6 +14,7 @@ export interface Config {
   defaultTimeoutMs: number;
   maxTimeoutMs: number;
   maxDepth: number;
+  retentionDays: number;
   useDshCredentials: boolean;
   credentialsFile: string;
   envAllow: string[];
@@ -141,6 +142,7 @@ export async function loadConfig(): Promise<Config> {
     defaultTimeoutMs: intEnv('DSH_WORKERS_DEFAULT_TIMEOUT_S', 1200, 60, 3600) * 1000,
     maxTimeoutMs: intEnv('DSH_WORKERS_MAX_TIMEOUT_S', 3600, 60, 3600) * 1000,
     maxDepth: intEnv('DSH_WORKERS_MAX_DEPTH', 2, 0, 8),
+    retentionDays: intEnv('DSH_WORKERS_RETENTION_DAYS', 7, 0, 3650),
     useDshCredentials: boolEnv('DSH_WORKERS_USE_DSH_CREDENTIALS'),
     credentialsFile: resolve(
       expandHome(
