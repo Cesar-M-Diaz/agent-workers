@@ -6,6 +6,7 @@ import { join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import type { Config } from './config.js';
 import { resolveApiKey } from './config.js';
+import { readEventPage } from './events.js';
 import { NdjsonFold } from './ndjson.js';
 import { pathOverlaps, resolveAllowedPath } from './paths.js';
 import {
@@ -74,6 +75,7 @@ interface Job {
   survivors?: number[];
   changes?: WorktreeChanges;
   cleaned?: boolean;
+  progressPersistScheduled?: boolean;
   eventsPath: string;
   finalPath: string;
   stderrPath: string;
@@ -525,7 +527,16 @@ export class JobManager {
     job.status = 'running';
     job.startedAt = new Date().toISOString();
     job.eventStream = createWriteStream(job.eventsPath, { flags: 'a', mode: 0o600 });
-    job.fold = new NdjsonFold((line) => job.eventStream?.write(`${line}\n`));
+    job.fold = new NdjsonFold((line) => {
+      job.eventStream?.write(`${line}\n`);
+      if (!job.progressPersistScheduled) {
+        job.progressPersistScheduled = true;
+        setTimeout(() => {
+          job.progressPersistScheduled = false;
+          if (!job.terminal) void this.writeJob(job).catch(() => undefined);
+        }, 1000);
+      }
+    });
     child.stdout.on('data', (chunk: Buffer) => job.fold.push(chunk));
     child.stderr.on('data', (chunk: Buffer) => {
       job.stderrTail = appendTail(job.stderrTail, chunk.toString('utf8'));
@@ -716,6 +727,18 @@ export class JobManager {
         throw err;
       }
     }
+  }
+
+  async events(jobId: string, cursor: number, limit: number): Promise<Record<string, unknown>> {
+    const job = this.mustGet(jobId);
+    const page = await readEventPage(job.eventsPath, cursor, limit);
+    return {
+      job_id: job.id,
+      status: job.status,
+      reason: job.reason,
+      session_id: job.sessionId ?? job.fold.state.sessionId,
+      ...page,
+    };
   }
 
   async result(

@@ -11,12 +11,13 @@ description: >
 
 # DSH parallel workers
 
-The `dsh-workers` MCP server exposes six tools:
+The `dsh-workers` MCP server exposes seven tools:
 
 - `dsh_start`: start a worker and return a job id immediately.
 - `dsh_status`: inspect running and queued jobs.
 - `dsh_wait`: wait for any or all jobs, with a bounded timeout.
 - `dsh_result`: read the final answer, stderr tail, and worktree diff.
+- `dsh_events`: read live NDJSON events from a cursor (`next_cursor`).
 - `dsh_cancel`: cancel a queued or running job.
 - `dsh_cleanup`: remove a finished worktree and branch.
 
@@ -102,6 +103,18 @@ Final response:
 
 Start a small batch first. The server enforces its own concurrency and queue
 limits, so do not try to bypass them.
+
+## Live visibility
+
+Use `dsh_status` for a compact progress snapshot and `dsh_events` while a worker
+is running to read its tool calls, text, thinking, and status events. Keep the
+returned `next_cursor` and pass it to the next call instead of rereading the
+whole stream.
+
+Do not claim these workers appear in Claude's native subagent panel or the DSH
+TUI side panel. They are separate DSH headless processes. To inspect them
+visually, use the global `/dsh-ui` command, which opens the standalone
+`dsh-workers` dashboard, or `/dsh-watch <job_id>` to focus one job.
 
 ## Required review
 

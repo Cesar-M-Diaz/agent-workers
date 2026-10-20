@@ -128,7 +128,7 @@ describe('MCP server', () => {
     await rm(root, { recursive: true, force: true });
   });
 
-  it('initializes, lists the six tools, and runs a worker', async () => {
+  it('initializes, lists the seven tools, and runs a worker', async () => {
     const init = await rpc.request('initialize', {
       protocolVersion: '2025-06-18',
       capabilities: {},
@@ -143,6 +143,7 @@ describe('MCP server', () => {
     expect(names).toEqual([
       'dsh_cancel',
       'dsh_cleanup',
+      'dsh_events',
       'dsh_result',
       'dsh_start',
       'dsh_status',
@@ -169,5 +170,16 @@ describe('MCP server', () => {
     });
     const resultPayload = toolPayload(result) as { final: string };
     expect(resultPayload.final).toBe('MCP OK hello');
+
+    const events = await rpc.request('tools/call', {
+      name: 'dsh_events',
+      arguments: { job_id: startPayload.job_id, cursor: 0, limit: 10 },
+    });
+    const eventPayload = toolPayload(events) as {
+      events: Array<{ type: string }>;
+      next_cursor: number;
+    };
+    expect(eventPayload.events.map((event) => event.type)).toEqual(['session', 'status', 'final']);
+    expect(eventPayload.next_cursor).toBe(3);
   });
 });

@@ -74,6 +74,12 @@ async function ensurePrivateDir(path: string, fallbackName: string): Promise<str
   }
 }
 
+function defaultStateDir(): string {
+  const xdgStateHome = process.env.XDG_STATE_HOME?.trim();
+  if (xdgStateHome) return join(xdgStateHome, 'dsh-workers');
+  return join(homedir(), '.local', 'state', 'dsh-workers');
+}
+
 function splitList(raw: string | undefined): string[] {
   if (!raw) return [];
   return raw
@@ -82,11 +88,12 @@ function splitList(raw: string | undefined): string[] {
     .filter(Boolean);
 }
 
+export async function resolveWorkerStateDir(): Promise<string> {
+  return ensurePrivateDir(process.env.DSH_WORKERS_STATE_DIR ?? defaultStateDir(), 'state');
+}
+
 export async function loadConfig(): Promise<Config> {
-  const stateDir = await ensurePrivateDir(
-    process.env.DSH_WORKERS_STATE_DIR ?? join(tmpdir(), 'dsh-workers'),
-    'state',
-  );
+  const stateDir = await resolveWorkerStateDir();
   const worktreeRoot = await ensurePrivateDir(
     process.env.DSH_WORKERS_WORKTREE_ROOT ?? join(stateDir, 'worktrees'),
     'worktrees',

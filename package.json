@@ -1,15 +1,18 @@
 {
   "name": "dsh-workers",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": true,
-  "description": "Standalone stdio MCP server and Claude Code skill for running DeepSeek Harness (dsh) headless workers in parallel",
+  "description": "Standalone MCP server, live dashboard, and Claude Code commands for running DeepSeek Harness (dsh) headless workers in parallel",
   "type": "module",
   "bin": {
-    "dsh-workers": "./dist/server.js"
+    "dsh-workers": "./dist/server.js",
+    "dsh-workers-ui": "./dist/ui.js"
   },
   "files": [
     "dist",
-    "skill"
+    "skill",
+    "claude",
+    "scripts"
   ],
   "engines": {
     "node": ">=24"
@@ -20,12 +23,14 @@
     "url": "git+https://github.com/Cesar-M-Diaz/dsh-workers.git"
   },
   "scripts": {
-    "build": "tsc -b",
+    "build": "tsc -b && node scripts/copy-assets.mjs",
     "typecheck": "tsc -b",
     "start": "node dist/server.js",
-    "test": "tsc -b && vitest run",
+    "ui": "node dist/ui.js",
+    "test": "tsc -b && node scripts/copy-assets.mjs && vitest run",
     "lint": "biome check .",
-    "format": "biome format --write ."
+    "format": "biome format --write .",
+    "install:claude-commands": "bash scripts/install-claude-commands.sh"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "1.31.0",
