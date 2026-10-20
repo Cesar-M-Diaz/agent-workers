@@ -85,6 +85,6 @@ describe('dashboard API', () => {
     expect(response.headers.get('content-type')).toContain('text/html');
     const html = await response.text();
     expect(html).toContain('DSH Workers');
-    expect(html).toContain('[hidden] { display: none !important; }');
+    expect(html).toContain('.empty[hidden], .job-view[hidden] { display: none; }');
   });
 });
