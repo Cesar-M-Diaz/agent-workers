@@ -80,8 +80,9 @@ function restoreWorktree(saved: AdminJobFile): WorktreeInfo | undefined {
 export async function deleteJobRecord(
   stateDir: string,
   jobId: string,
-  options: { discardChanges?: boolean } = {},
+  options: { discardChanges?: boolean; worktreeRoot?: string } = {},
 ): Promise<DeleteJobResult> {
+  const worktreeRoot = options.worktreeRoot ?? join(stateDir, 'worktrees');
   const saved = await readAdminJob(stateDir, jobId);
   const status = typeof saved.status === 'string' ? saved.status : 'unknown';
   if (ACTIVE_STATUSES.has(status)) {
@@ -96,7 +97,7 @@ export async function deleteJobRecord(
   if (info && saved.worktree?.cleaned !== true) {
     let cleaned: Awaited<ReturnType<typeof cleanupWorktree>>;
     try {
-      cleaned = await cleanupWorktree(info, options.discardChanges === true);
+      cleaned = await cleanupWorktree(info, options.discardChanges === true, worktreeRoot);
     } catch (err) {
       throw new JobAdminError(
         'worktree_error',
@@ -107,7 +108,7 @@ export async function deleteJobRecord(
     if (cleaned.worktree === 'preserved_dirty') {
       throw new JobAdminError(
         'worktree_dirty',
-        'worktree has uncommitted changes; confirm discarding them to delete the job',
+        'worktree has uncommitted changes or commits not in the base revision; confirm discarding them to delete the job',
         409,
         { worktree: 'preserved_dirty' },
       );
@@ -130,6 +131,7 @@ export interface PruneResult {
 export async function pruneExpiredJobs(
   stateDir: string,
   retentionDays: number,
+  worktreeRoot = join(stateDir, 'worktrees'),
 ): Promise<PruneResult> {
   const result: PruneResult = { deleted: [], preserved_dirty: [], errors: [] };
   if (!Number.isFinite(retentionDays) || retentionDays <= 0) return result;
@@ -158,7 +160,7 @@ export async function pruneExpiredJobs(
     if (!Number.isFinite(finished) || finished > cutoff) continue;
 
     try {
-      await deleteJobRecord(stateDir, entry.name, { discardChanges: false });
+      await deleteJobRecord(stateDir, entry.name, { discardChanges: false, worktreeRoot });
       result.deleted.push(entry.name);
     } catch (err) {
       if (err instanceof JobAdminError && err.code === 'worktree_dirty') {

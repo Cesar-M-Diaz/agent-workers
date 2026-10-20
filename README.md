@@ -177,13 +177,13 @@ Restart Claude Code or start a new session after installing commands.
 
 - A terminal job record is kept for `DSH_WORKERS_RETENTION_DAYS` days
   (default `7`).
-- Automatic retention never deletes a job with a dirty worktree. Those records
-  stay until the user reviews them.
+- Automatic retention never deletes a job with a dirty worktree or commits that
+  are not reachable from the base revision. Those records stay until review.
 - The dashboard's **Delete** button deletes a terminal job and its logs.
 - If the job has a clean worktree, deleting the job also removes the worktree
   and branch.
-- If the worktree is dirty, the first delete attempt is refused; confirming the
-  discard prompt deletes the worktree and branch with force.
+- If the worktree is dirty or contains commits beyond its base, the first delete
+  attempt is refused; confirming the discard prompt deletes it with force.
 - `dsh_cleanup` only cleans a worktree; `dsh_delete` removes the job record.
 - Active or queued jobs cannot be deleted.
 

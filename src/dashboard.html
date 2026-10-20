@@ -805,7 +805,7 @@
       }
       if (!discardChanges) {
         const message = job.worktree
-          ? 'Delete job ' + job.id + '?\n\nA clean worktree will be removed. Dirty changes are preserved unless you confirm again.'
+          ? 'Delete job ' + job.id + '?\n\nA clean worktree will be removed. Changes or commits beyond the base are preserved unless you confirm again.'
           : 'Delete job ' + job.id + ' and its logs?';
         if (!confirm(message)) return;
       }
@@ -822,7 +822,7 @@
       let body = {};
       try { body = await response.json(); } catch { /* keep empty body */ }
       if (response.status === 409 && body.error === 'worktree_dirty') {
-        if (confirm('The worktree has uncommitted changes. Delete the job and discard those changes?')) {
+        if (confirm('The worktree has uncommitted changes or commits beyond its base. Delete it and discard those changes?')) {
           await deleteSelectedJob(true);
         }
         return;

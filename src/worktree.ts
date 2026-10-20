@@ -1,5 +1,5 @@
-import { mkdir, stat } from 'node:fs/promises';
-import { join } from 'node:path';
+import { mkdir, rm, stat } from 'node:fs/promises';
+import { isAbsolute, join, relative, resolve } from 'node:path';
 import { runCapture } from './proc.js';
 import type { ChangedFile, WorktreeChanges, WorktreeInfo } from './types.js';
 
@@ -144,10 +144,46 @@ export async function computeWorktreeChanges(info: WorktreeInfo): Promise<Worktr
   };
 }
 
+function assertInsideWorktreeRoot(path: string, worktreeRoot: string): void {
+  const rel = relative(resolve(worktreeRoot), resolve(path));
+  if (rel === '' || rel.startsWith('..') || isAbsolute(rel)) {
+    throw new Error(`refusing to remove worktree outside ${worktreeRoot}: ${path}`);
+  }
+}
+
+async function worktreeHasChanges(info: WorktreeInfo): Promise<boolean> {
+  const status = await runCapture('git', [
+    '-C',
+    info.path,
+    'status',
+    '--porcelain',
+    '--untracked-files=all',
+  ]);
+  if (status.code !== 0) return true;
+  if (status.stdout.trim() !== '') return true;
+
+  const ahead = await runCapture('git', [
+    '-C',
+    info.path,
+    'rev-list',
+    '--count',
+    `${info.baseCommit}..HEAD`,
+  ]);
+  if (ahead.code !== 0) return true;
+  const count = Number(ahead.stdout.trim());
+  return !Number.isInteger(count) || count > 0;
+}
+
+function isBrokenWorktreeMetadata(stderr: string): boolean {
+  return /is not a \.git file|cannot remove working tree|validation failed/i.test(stderr);
+}
+
 export async function cleanupWorktree(
   info: WorktreeInfo,
   discardChanges: boolean,
+  worktreeRoot: string,
 ): Promise<{ worktree: 'removed' | 'preserved_dirty' | 'none'; branchDeleted: boolean }> {
+  assertInsideWorktreeRoot(info.path, worktreeRoot);
   try {
     const infoStat = await stat(info.path);
     if (!infoStat.isDirectory()) return { worktree: 'none', branchDeleted: false };
@@ -157,15 +193,7 @@ export async function cleanupWorktree(
     throw err;
   }
 
-  const status = await runCapture('git', [
-    '-C',
-    info.path,
-    'status',
-    '--porcelain',
-    '--untracked-files=all',
-  ]);
-  if (status.code !== 0) throw gitError('cannot inspect worktree status', status);
-  if (status.stdout.trim() !== '' && !discardChanges) {
+  if (!discardChanges && (await worktreeHasChanges(info))) {
     return { worktree: 'preserved_dirty', branchDeleted: false };
   }
 
@@ -177,7 +205,15 @@ export async function cleanupWorktree(
     ...(discardChanges ? ['--force'] : []),
     info.path,
   ]);
-  if (remove.code !== 0) throw gitError('cannot remove git worktree', remove);
+  if (remove.code !== 0) {
+    // Some tools materialize the linked worktree's `.git` file as a directory.
+    // Git then refuses `worktree remove`; after the dirty check above, remove
+    // the isolated directory and prune the now-stale registration instead.
+    if (!isBrokenWorktreeMetadata(remove.stderr))
+      throw gitError('cannot remove git worktree', remove);
+    await rm(info.path, { recursive: true, force: true });
+    await runCapture('git', ['-C', info.repoRoot, 'worktree', 'prune', '--expire', 'now']);
+  }
 
   const branch = await runCapture('git', ['-C', info.repoRoot, 'branch', '-D', info.branch]);
   return { worktree: 'removed', branchDeleted: branch.code === 0 };

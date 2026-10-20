@@ -27,6 +27,7 @@ interface CliOptions {
 export interface DashboardOptions {
   retentionDays?: number;
   pruneIntervalMs?: number;
+  worktreeRoot?: string;
 }
 
 function parsePort(raw: string | undefined): number {
@@ -209,6 +210,7 @@ async function streamDashboard(
 
 export function createDashboardServer(stateDir: string, options: DashboardOptions = {}): Server {
   const retentionDays = options.retentionDays ?? 0;
+  const worktreeRoot = options.worktreeRoot ?? join(stateDir, 'worktrees');
   const server = createServer((req, res) => {
     void (async () => {
       try {
@@ -227,7 +229,7 @@ export function createDashboardServer(stateDir: string, options: DashboardOption
             writeJson(
               res,
               200,
-              await deleteJobRecord(stateDir, jobId, { discardChanges: discard }),
+              await deleteJobRecord(stateDir, jobId, { discardChanges: discard, worktreeRoot }),
             );
           } catch (err) {
             if (err instanceof JobAdminError) {
@@ -319,7 +321,7 @@ export function createDashboardServer(stateDir: string, options: DashboardOption
       if (pruning) return;
       pruning = true;
       try {
-        await pruneExpiredJobs(stateDir, retentionDays);
+        await pruneExpiredJobs(stateDir, retentionDays, worktreeRoot);
       } finally {
         pruning = false;
       }
@@ -388,7 +390,10 @@ async function listen(server: Server, port: number): Promise<void> {
 async function startForeground(options: CliOptions): Promise<void> {
   const config = await loadConfig();
   const stateDir = config.stateDir;
-  const server = createDashboardServer(stateDir, { retentionDays: config.retentionDays });
+  const server = createDashboardServer(stateDir, {
+    retentionDays: config.retentionDays,
+    worktreeRoot: config.worktreeRoot,
+  });
   await listen(server, options.port);
   const url = statusUrl(options.port, options.job);
   process.stdout.write(`dsh-workers ui ${VERSION}\n${url}\nstate: ${stateDir}\n`);

@@ -243,7 +243,11 @@ export class JobManager {
 
   async init(): Promise<void> {
     await mkdir(join(this.config.stateDir, 'jobs'), { recursive: true, mode: 0o700 });
-    await pruneExpiredJobs(this.config.stateDir, this.config.retentionDays);
+    await pruneExpiredJobs(
+      this.config.stateDir,
+      this.config.retentionDays,
+      this.config.worktreeRoot,
+    );
     this.apiKey = await resolveApiKey(this.config);
     const version = await runCapture(this.config.dshBin, ['--version'], { timeoutMs: 10_000 });
     this.dshVersion = version.code === 0 ? version.stdout.trim() : 'unavailable';
@@ -863,7 +867,7 @@ export class JobManager {
     if (!job.terminal) throw new JobError('not_terminal', 'cannot clean up a non-terminal job');
     if (!job.worktree || job.cleaned)
       return { job_id: job.id, worktree: 'none', branch_deleted: false };
-    const result = await cleanupWorktree(job.worktree, discardChanges);
+    const result = await cleanupWorktree(job.worktree, discardChanges, this.config.worktreeRoot);
     if (result.worktree === 'removed') job.cleaned = true;
     await this.writeJob(job);
     return {
@@ -880,7 +884,10 @@ export class JobManager {
     const job = await this.requireJob(jobId);
     if (!job.terminal) throw new JobError('not_terminal', 'cannot delete a non-terminal job');
     try {
-      const result = await deleteJobRecord(this.config.stateDir, jobId, { discardChanges });
+      const result = await deleteJobRecord(this.config.stateDir, jobId, {
+        discardChanges,
+        worktreeRoot: this.config.worktreeRoot,
+      });
       this.jobs.delete(jobId);
       return result;
     } catch (err) {
