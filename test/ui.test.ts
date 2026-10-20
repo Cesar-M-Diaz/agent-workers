@@ -83,6 +83,8 @@ describe('dashboard API', () => {
     const response = await fetch(`${baseUrl}/`);
     expect(response.status).toBe(200);
     expect(response.headers.get('content-type')).toContain('text/html');
-    expect(await response.text()).toContain('DSH Workers');
+    const html = await response.text();
+    expect(html).toContain('DSH Workers');
+    expect(html).toContain('[hidden] { display: none !important; }');
   });
 });
