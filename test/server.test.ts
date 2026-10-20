@@ -98,6 +98,9 @@ describe('MCP server', () => {
     const fake = join(root, 'fake-dsh.mjs');
     await writeFile(fake, fakeDsh, { mode: 0o700 });
     await chmod(fake, 0o700);
+    for (const profile of ['work-openrouter', 'personal-deepseek', 'personal-opencode']) {
+      await mkdir(join(root, 'dsh-home', 'profiles', profile), { recursive: true });
+    }
     child = spawn(process.execPath, [serverPath], {
       cwd: repo,
       env: {
@@ -128,7 +131,7 @@ describe('MCP server', () => {
     await rm(root, { recursive: true, force: true });
   });
 
-  it('initializes, lists the nine tools, and runs a worker', async () => {
+  it('initializes, lists the eleven tools, and runs a worker', async () => {
     const init = await rpc.request('initialize', {
       protocolVersion: '2025-06-18',
       capabilities: {},
@@ -138,7 +141,14 @@ describe('MCP server', () => {
     rpc.notify('notifications/initialized', {});
 
     const tools = await rpc.request('tools/list', {});
-    const listed = (tools.result?.tools ?? []) as Array<{ name: string }>;
+    const listed = (tools.result?.tools ?? []) as Array<{
+      name: string;
+      inputSchema?: {
+        required?: string[];
+        properties?: Record<string, unknown>;
+        additionalProperties?: boolean;
+      };
+    }>;
     const names = listed.map((tool) => tool.name).sort();
     expect(names).toEqual([
       'dsh_cancel',
@@ -146,10 +156,33 @@ describe('MCP server', () => {
       'dsh_delete',
       'dsh_events',
       'dsh_group',
+      'dsh_profile',
       'dsh_result',
       'dsh_start',
       'dsh_status',
+      'dsh_steer',
       'dsh_wait',
+    ]);
+
+    const steer = listed.find((tool) => tool.name === 'dsh_steer');
+    expect(steer?.inputSchema?.required).toEqual(expect.arrayContaining(['job_id', 'message']));
+    expect(Object.keys(steer?.inputSchema?.properties ?? {}).sort()).toEqual([
+      'job_id',
+      'message',
+      'timeout_s',
+    ]);
+    expect(steer?.inputSchema?.additionalProperties).toBe(false);
+
+    const profile = await rpc.request('tools/call', {
+      name: 'dsh_profile',
+      arguments: {},
+    });
+    const profilePayload = toolPayload(profile) as { profile: string; profiles: string[] };
+    expect(profilePayload.profile).toBe('work-openrouter');
+    expect(profilePayload.profiles).toEqual([
+      'personal-deepseek',
+      'personal-opencode',
+      'work-openrouter',
     ]);
 
     const started = await rpc.request('tools/call', {
@@ -158,10 +191,12 @@ describe('MCP server', () => {
     });
     const startPayload = toolPayload(started) as {
       job_id: string;
+      profile: string;
       group_id: string;
       group_name: string;
     };
     expect(startPayload.job_id).toMatch(/^j_/);
+    expect(startPayload.profile).toBe('work-openrouter');
     expect(startPayload.group_id).toBe('g_test');
     expect(startPayload.group_name).toBe('Test group');
 

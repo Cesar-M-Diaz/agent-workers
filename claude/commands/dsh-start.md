@@ -20,6 +20,9 @@ Call `dsh_start` and always pass:
 Default to `access: "read-only"`. Use `access: "workspace-write"` with
 `isolation: "worktree"` only when the task clearly requires file changes.
 
+If the user explicitly names a profile, pass it as `profile` (for example
+`personal-deepseek`); otherwise omit it and use the session default.
+
 The worker does not see this conversation, so add the minimum relevant paths and
 constraints before starting it. Report the job id, group, status, cwd, and
 worktree path if present. Keep the job id for later status, events, result,

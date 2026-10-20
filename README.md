@@ -6,16 +6,17 @@ commands for running DeepSeek Harness (`dsh`) headless workers in parallel.
 This is an independent personal project. It is not an official DeepSeek package
 and is not part of N|Solid or NodeSource.
 
-The server uses one `dsh --profile headless --json` process per job. It provides
+The server uses one `dsh --profile <profile> --json` process per job. It provides
 a bounded FIFO queue, wall-clock timeouts, process-group cancellation, optional
-git worktree isolation, session grouping, artifact-based results, and automatic
-retention for terminal jobs.
+git worktree isolation, session grouping, artifact-based results, automatic
+retention for terminal jobs, pure heuristic watchdogs, and session steering
+through `dsh_steer`.
 
 ```text
 Claude Code / Codex
   └── MCP "dsh-workers"
-        └── one dsh --profile headless --json process per job
-              └── DeepSeek
+        └── one dsh --profile <profile> --json process per job
+              └── provider/model from the dsh profile
 ```
 
 These workers are separate DSH processes. They are not Claude `Task` calls and
@@ -25,7 +26,7 @@ do not appear in the DSH TUI native subagent side panel.
 
 - Node 24+
 - pnpm 10+
-- `dsh` and a DeepSeek credential available to the worker process
+- `dsh` and a DeepSeek, OpenRouter or OpenCode Go credential available to the worker process
 - Writable state and DSH home directories
 
 ## Build and test
@@ -73,19 +74,46 @@ node dist/ui.js --detach --open --job j_abc123
 ```
 
 The dashboard groups jobs by parent session, shows status, steps, tool calls,
-thinking, assistant text, tool results, final answer, usage, and elapsed time.
-Terminal jobs can be deleted from the job header. A dirty worktree requires a
-second confirmation before its changes are discarded. Cancellation remains an
-MCP operation.
+thinking, assistant text, tool results, final answer, token usage, estimated USD
+cost, elapsed time, and current watchdog alerts. Usage is broken down into input,
+output, cache reads and cache writes; the cost is estimated from the run's
+provider/model metadata. Terminal jobs can be deleted from the job header. A
+dirty worktree requires a second confirmation before its changes are discarded.
+Cancellation remains an MCP operation.
 
 The dashboard is not the DSH TUI side panel. The TUI side panel belongs to an
 interactive DSH session; these workers are separate headless DSH processes.
 
 ## Headless credentials
 
-The headless profile disables the DSH managed credential store. A worker can
-receive `DEEPSEEK_API_KEY` explicitly, read a project `.env`, or read the
-current DSH credential reference when `DSH_WORKERS_USE_DSH_CREDENTIALS=1`.
+The worker profiles disable the DSH managed credential store. A worker can
+receive `DEEPSEEK_API_KEY`, `OPENROUTER_CHAT_API_KEY` or `OPENCODE_GO_API_KEY`
+explicitly, or read the references from the DSH credential store when
+`DSH_WORKERS_USE_DSH_CREDENTIALS=1`. The worker profile decides which provider
+and model the worker uses.
+
+## Worker profiles
+
+Profiles live under `$DSH_WORKERS_DSH_HOME/profiles`. The server starts in
+`DSH_WORKERS_PROFILE` (default `work-openrouter`, falling back to `headless`),
+and `dsh_profile` switches the profile for the current MCP session. `dsh_start`
+also accepts `profile` for a single job; existing jobs keep their profile,
+including when resumed.
+
+The local setup uses three profiles:
+
+| Profile | Provider | Model | Credential |
+| --- | --- | --- | --- |
+| `work-openrouter` | `openrouter` | `~deepseek/deepseek-flash-latest` | `OPENROUTER_CHAT_API_KEY` |
+| `personal-deepseek` | `deepseek-official` | `deepseek-flash` | `DEEPSEEK_API_KEY` |
+| `personal-opencode` | `opencode-go` | `deepseek-v4.1-flash` | `OPENCODE_GO_API_KEY` |
+
+`personal-opencode` also registers `glm-5.3-flash`. Create more directories
+with the same files (including `metadata.json`) to add profiles; `dsh_profile` lists them dynamically.
+
+Each profile also has a `metadata.json` with its `provider` and `model`. The
+server copies that metadata into every job so the dashboard can estimate cost;
+keep it in sync with `cordis.patch.yml` when changing the model.
 
 ## MCP configuration
 
@@ -168,6 +196,7 @@ Commands installed under `~/.claude/commands/`:
 | `/dsh-wait <job ...>` | Wait for jobs with a bounded timeout. |
 | `/dsh-result <job>` | Read final answer, tails, and worktree changes. |
 | `/dsh-cancel <job>` | Cancel a queued or running worker. |
+| `/dsh-steer <job> <message>` | Cancel if active and resume the session with a corrective instruction. |
 | `/dsh-cleanup <job>` | Clean up a terminal worktree. |
 | `/dsh-delete <job>` | Delete a terminal job record and its files. |
 | `/dsh-ui [start\|stop\|status\|restart]` | Control the live dashboard. |
@@ -210,6 +239,7 @@ DSH home, patches, or unrestricted permissions.
 | `DSH_WORKERS_STATE_DIR` | `$XDG_STATE_HOME/dsh-workers` or `~/.local/state/dsh-workers` | Job metadata and logs; mode 0700. |
 | `DSH_WORKERS_WORKTREE_ROOT` | `<state>/worktrees` | Git worktrees created by the server. |
 | `DSH_WORKERS_DSH_HOME` | `<state>/dsh-home` | Shared DSH profile and session store. |
+| `DSH_WORKERS_PROFILE` | `work-openrouter` (fallback `headless`) | Starting profile for new workers. |
 | `DSH_WORKERS_MAX_CONCURRENT` | `3` | Hard maximum 8. |
 | `DSH_WORKERS_MAX_QUEUE` | `16` | Bounded queue. |
 | `DSH_WORKERS_DEFAULT_TIMEOUT_S` | `1200` | Default per-job wall clock. |
@@ -218,10 +248,16 @@ DSH home, patches, or unrestricted permissions.
 | `DSH_WORKERS_RETENTION_DAYS` | `7` | Delete terminal job records after this many days; `0` disables. |
 | `DSH_WORKERS_SESSION_ID` | MCP instance id | Default parent-session id for new jobs. |
 | `DSH_WORKERS_SESSION_NAME` | current directory name | Default parent-session display name. |
-| `DSH_WORKERS_USE_DSH_CREDENTIALS` | off | Read `DEEPSEEK_API_KEY` from the configured credential file. |
+| `DSH_WORKERS_USE_DSH_CREDENTIALS` | off | Read `DEEPSEEK_API_KEY`, `OPENROUTER_CHAT_API_KEY` and `OPENCODE_GO_API_KEY` from the configured credential file. |
 | `DSH_WORKERS_CREDENTIALS_FILE` | `~/.dsh/.credentials.yaml` | Used only when the credential opt-in is on. |
 | `DSH_WORKERS_ENV_ALLOW` | empty | Extra environment variable names allowed into workers. |
 | `DSH_WORKERS_UI_PORT` | `47100` | Default live dashboard port. |
+| `DSH_WORKERS_STALL_S` | `120` | Warn when an active job has no event for this many seconds (30..3600). |
+| `DSH_WORKERS_LOOP_REPEAT` | `4` | Warn when the same tool call repeats this many times in the last 10 calls (2..20). |
+| `DSH_WORKERS_TOOL_ERROR_LIMIT` | `5` | Warn when this many of the last 10 tool results are not `completed` (1..50). |
+| `DSH_WORKERS_MAX_STEPS` | unset | Warn (or cancel) when a job exceeds this many steps. Off by default. |
+| `DSH_WORKERS_MAX_COST_USD` | unset | Warn (or cancel) when the estimated cost exceeds this USD amount. Off by default. |
+| `DSH_WORKERS_WATCHDOG_ACTION` | `warn` | `warn` or `cancel`; `cancel` only applies to the budget watchdog. |
 
 The server passes a small environment allowlist to workers and always forces
 `DSH_PERMISSION_MODE=read-only` or `workspace-write`. It never exposes
@@ -234,15 +270,52 @@ home, but the fallback state is temporary.
 
 ## MCP tools
 
-- `dsh_start`: start a worker and return a job id immediately; accepts `group_id` and `group_name`.
+- `dsh_start`: start a worker and return a job id immediately; accepts `group_id`, `group_name`, and an optional `profile`.
 - `dsh_group`: read or set the parent-session group used by new jobs.
-- `dsh_status`: inspect running and queued jobs.
-- `dsh_wait`: wait for any or all jobs, with a bounded timeout.
-- `dsh_result`: read the final answer, stderr tail, and worktree diff.
+- `dsh_profile`: read or switch the DSH profile for this MCP session.
+- `dsh_status`: inspect running and queued jobs, including token breakdown, estimated cost, and watchdog alerts.
+- `dsh_wait`: wait for any or all jobs, with a bounded timeout; returns early with `alerted` when a watched job gains a new alert kind.
+- `dsh_result`: read the final answer, stderr tail, worktree diff, usage and estimated cost.
 - `dsh_events`: read a cursor-based page of live NDJSON events.
 - `dsh_cancel`: cancel a queued or running job.
+- `dsh_steer`: cancel a queued or running job (settled as `cancelled`/`steered`) and resume its DSH session with a self-contained corrective message; a terminal job is resumed without a cancel.
 - `dsh_cleanup`: remove a finished worktree and branch.
 - `dsh_delete`: delete a terminal job record, logs, and its clean worktree.
+
+## Watchdogs
+
+The server folds each worker's NDJSON events and recomputes alerts on every
+event and about every five seconds, with no model calls:
+
+- `stalled`: no event for `DSH_WORKERS_STALL_S` seconds;
+- `loop`: the same tool with identical input at least `DSH_WORKERS_LOOP_REPEAT`
+  times in the last 10 tool calls;
+- `tool_errors`: at least `DSH_WORKERS_TOOL_ERROR_LIMIT` non-`completed` tool
+  results in the last 10 results;
+- `budget`: steps or estimated cost above the optional limits.
+
+Alerts are stored in `job.json` and reported by `dsh_status`, `dsh_wait`,
+`dsh_group`, and the dashboard. `DSH_WORKERS_WATCHDOG_ACTION=cancel` stops a
+budget-exceeding job as `cancelled` with reason `budget_exceeded`; all other
+alerts remain warnings. `dsh_wait` reports jobs that gained a new alert kind in
+`alerted`, so the caller can inspect with `dsh_events` and decide whether to
+`dsh_steer`.
+
+## Pricing
+
+Cost estimates use published list prices in USD per million tokens, captured on
+2026-10-20 from OpenRouter's `/api/v1/models` and the installed pi-ai catalogs:
+
+| Provider / model | Input | Output | Cache read |
+| --- | ---: | ---: | ---: |
+| `openrouter` / `~deepseek/deepseek-flash-latest` | $0.07 | $0.50 | $0.008 |
+| `deepseek-official` / `deepseek-flash` | $0.30 | $1.20 | $0.006 |
+| `opencode-go` / `deepseek-v4.1-flash` | $0.15 | $0.60 | $0.003 |
+| `opencode-go` / `glm-5.3-flash` | $0.15 | $0.50 | $0.03 |
+
+These are estimates: they exclude taxes, discounts, provider rounding and any
+cache-write charge not listed by the provider. Update `src/pricing.ts` when a
+provider changes prices.
 
 ## Security boundary
 

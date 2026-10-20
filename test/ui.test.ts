@@ -32,6 +32,23 @@ describe('dashboard API', () => {
         toolCalls: 2,
         lastTool: 'bash',
         eventsCount: 2,
+        profile: 'work-openrouter',
+        provider: 'openrouter',
+        model: '~deepseek/deepseek-flash-latest',
+        usage: {
+          inputTokens: 1000,
+          outputTokens: 100,
+          totalTokens: 2000,
+          cacheReadTokens: 900,
+        },
+        costUsd: 0.0002,
+        alerts: [
+          {
+            kind: 'loop',
+            message: 'same bash call repeated 5× in last 10',
+            since: new Date().toISOString(),
+          },
+        ],
       }),
     );
     await writeFile(
@@ -87,6 +104,21 @@ describe('dashboard API', () => {
         status: 'running',
         group_id: 'g_ui',
         group_name: 'UI test session',
+        profile: 'work-openrouter',
+        provider: 'openrouter',
+        model: '~deepseek/deepseek-flash-latest',
+        cost_usd: 0.0002,
+        alerts: [
+          expect.objectContaining({
+            kind: 'loop',
+            message: 'same bash call repeated 5× in last 10',
+          }),
+        ],
+        usage: expect.objectContaining({
+          inputTokens: 1000,
+          outputTokens: 100,
+          cacheReadTokens: 900,
+        }),
       }),
     );
   });
@@ -129,5 +161,8 @@ describe('dashboard API', () => {
     const html = await response.text();
     expect(html).toContain('DSH Workers');
     expect(html).toContain('.empty[hidden], .job-view[hidden] { display: none; }');
+    expect(html).toContain('tokens in');
+    expect(html).toContain('cache read');
+    expect(html).toContain("addMeta('cost'");
   });
 });

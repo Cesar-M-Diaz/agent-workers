@@ -1,6 +1,7 @@
 import type { Dirent } from 'node:fs';
 import { readdir, readFile, stat } from 'node:fs/promises';
 import { join } from 'node:path';
+import type { AlertKind, JobAlert } from './types.js';
 
 interface PersistedJobFile {
   id?: string;
@@ -20,6 +21,10 @@ interface PersistedJobFile {
     cleaned?: boolean;
   };
   sessionId?: string;
+  profile?: string;
+  provider?: string;
+  model?: string;
+  costUsd?: number;
   createdAt?: string;
   startedAt?: string;
   finishedAt?: string;
@@ -29,6 +34,8 @@ interface PersistedJobFile {
   eventsCount?: number;
   malformedLines?: number;
   usage?: Record<string, number>;
+  alerts?: unknown;
+  steeredFrom?: string;
 }
 
 export interface DashboardJob {
@@ -49,6 +56,10 @@ export interface DashboardJob {
     cleaned: boolean;
   } | null;
   session_id?: string;
+  profile?: string;
+  provider?: string;
+  model?: string;
+  cost_usd?: number;
   created_at: string;
   started_at?: string;
   finished_at?: string;
@@ -60,6 +71,34 @@ export interface DashboardJob {
   malformed_lines: number;
   usage: Record<string, number> | null;
   last_event_at?: string;
+  alerts: JobAlert[];
+  steered_from?: string;
+}
+
+const ALERT_KINDS = new Set<AlertKind>(['stalled', 'loop', 'tool_errors', 'budget']);
+
+function normalizeAlerts(value: unknown): JobAlert[] {
+  if (!Array.isArray(value)) return [];
+  const alerts: JobAlert[] = [];
+  for (const entry of value) {
+    if (entry === null || typeof entry !== 'object' || Array.isArray(entry)) continue;
+    const alert = entry as Record<string, unknown>;
+    if (
+      typeof alert.kind !== 'string' ||
+      !ALERT_KINDS.has(alert.kind as AlertKind) ||
+      typeof alert.message !== 'string' ||
+      !alert.message.trim() ||
+      typeof alert.since !== 'string'
+    ) {
+      continue;
+    }
+    alerts.push({
+      kind: alert.kind as AlertKind,
+      message: alert.message,
+      since: alert.since,
+    });
+  }
+  return alerts;
 }
 
 function isActive(status: string): boolean {
@@ -141,6 +180,10 @@ export async function listDashboardJobs(stateDir: string): Promise<DashboardJob[
             }
           : null,
       ...(typeof saved.sessionId === 'string' ? { session_id: saved.sessionId } : {}),
+      ...(typeof saved.profile === 'string' ? { profile: saved.profile } : {}),
+      ...(typeof saved.provider === 'string' ? { provider: saved.provider } : {}),
+      ...(typeof saved.model === 'string' ? { model: saved.model } : {}),
+      ...(typeof saved.costUsd === 'number' ? { cost_usd: saved.costUsd } : {}),
       created_at: createdAt,
       ...(startedAt ? { started_at: startedAt } : {}),
       ...(finishedAt ? { finished_at: finishedAt } : {}),
@@ -157,6 +200,8 @@ export async function listDashboardJobs(stateDir: string): Promise<DashboardJob[
         : 0,
       usage: saved.usage ?? null,
       ...(lastEventAt ? { last_event_at: lastEventAt } : {}),
+      alerts: normalizeAlerts(saved.alerts),
+      ...(typeof saved.steeredFrom === 'string' ? { steered_from: saved.steeredFrom } : {}),
     });
   }
 

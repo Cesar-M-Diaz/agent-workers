@@ -3,6 +3,18 @@ import type { Usage } from './types.js';
 
 const MAX_LINE_BYTES = 16 * 1024 * 1024;
 
+/** Tool calls considered by the loop watchdog. */
+export const ALERT_TOOL_WINDOW = 10;
+
+/** Tool results considered by the tool-error watchdog. */
+export const ALERT_RESULT_WINDOW = 10;
+
+export interface FoldedToolCall {
+  tool: string;
+  /** Stable JSON stringify of the call input, for exact repetition checks. */
+  input: string;
+}
+
 export interface FoldedRun {
   sessionId?: string;
   finalText?: string;
@@ -15,6 +27,23 @@ export interface FoldedRun {
   lastTool?: string;
   lastEventAt?: number;
   usage?: Usage;
+  recentToolCalls: FoldedToolCall[];
+  recentToolResults: string[];
+}
+
+/** JSON stringify with object keys sorted so equal inputs compare equal. */
+export function stableStringify(value: unknown): string {
+  const sort = (current: unknown): unknown => {
+    if (Array.isArray(current)) return current.map(sort);
+    if (current !== null && typeof current === 'object') {
+      const source = current as Record<string, unknown>;
+      const ordered: Record<string, unknown> = {};
+      for (const key of Object.keys(source).sort()) ordered[key] = sort(source[key]);
+      return ordered;
+    }
+    return current;
+  };
+  return JSON.stringify(sort(value)) ?? 'undefined';
 }
 
 function addUsage(current: Usage | undefined, next: unknown): Usage | undefined {
@@ -59,13 +88,15 @@ function addUsage(current: Usage | undefined, next: unknown): Usage | undefined 
   };
 }
 
-/** Incremental parser/folder for `dsh --profile headless --json` output. */
+/** Incremental parser/folder for `dsh --profile <profile> --json` output. */
 export class NdjsonFold {
   readonly state: FoldedRun = {
     malformedLines: 0,
     eventsCount: 0,
     toolCalls: 0,
     steps: 0,
+    recentToolCalls: [],
+    recentToolResults: [],
   };
 
   private readonly decoder = new StringDecoder('utf8');
@@ -140,8 +171,25 @@ export class NdjsonFold {
         return;
       case 'tool_call':
         this.state.toolCalls += 1;
-        if (typeof event.tool === 'string') this.state.lastTool = event.tool;
+        if (typeof event.tool === 'string') {
+          this.state.lastTool = event.tool;
+          this.state.recentToolCalls.push({
+            tool: event.tool,
+            input: stableStringify(event.input),
+          });
+          if (this.state.recentToolCalls.length > ALERT_TOOL_WINDOW) {
+            this.state.recentToolCalls.shift();
+          }
+        }
         return;
+      case 'tool_result': {
+        const status = typeof event.status === 'string' ? event.status : 'unknown';
+        this.state.recentToolResults.push(status);
+        if (this.state.recentToolResults.length > ALERT_RESULT_WINDOW) {
+          this.state.recentToolResults.shift();
+        }
+        return;
+      }
       case 'status': {
         const phase = typeof event.phase === 'string' ? event.phase : '';
         if (phase === 'step_start') this.state.steps += 1;

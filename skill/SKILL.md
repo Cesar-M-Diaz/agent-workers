@@ -11,17 +11,26 @@ description: >
 
 # DSH parallel workers
 
-The `dsh-workers` MCP server exposes nine tools:
+The `dsh-workers` MCP server exposes eleven tools:
 
-- `dsh_start`: start a worker and return a job id immediately; accepts `group_id` and `group_name`.
+- `dsh_start`: start a worker and return a job id immediately; accepts `group_id`, `group_name`, and an optional `profile`.
 - `dsh_group`: read or set the parent-session group used by new jobs.
+- `dsh_profile`: read or switch the DSH profile for this MCP session.
 - `dsh_status`: inspect running and queued jobs.
 - `dsh_wait`: wait for any or all jobs, with a bounded timeout.
 - `dsh_result`: read the final answer, stderr tail, and worktree diff.
 - `dsh_events`: read live NDJSON events from a cursor (`next_cursor`).
 - `dsh_cancel`: cancel a queued or running job.
+- `dsh_steer`: cancel (when active) and resume the same DSH session with a corrective message.
 - `dsh_cleanup`: remove a finished worktree and branch without deleting the job record.
 - `dsh_delete`: delete a terminal job record, logs, and a clean worktree/branch.
+
+Profiles live under `$DSH_WORKERS_DSH_HOME/profiles`. The available profiles are
+`work-openrouter`, `personal-deepseek` and `personal-opencode`. Use `dsh_profile`
+when the user says this session is work or personal; it affects new workers in
+this MCP session. Pass `profile` to `dsh_start` only for a one-off override.
+Existing jobs keep the profile they started with. `dsh_status` includes the
+input/output/cache token breakdown and estimated USD cost per job.
 
 A worker is a separate DSH agent. It does not see this conversation, the parent
 chat history, or files you read but did not mention. Every task must be
@@ -105,8 +114,8 @@ Before the first delegation in a conversation:
 4. If the user explicitly provides a session/group id or name, use those values.
 
 Keep every returned `job_id` and pass it automatically to `dsh_status`,
-`dsh_wait`, `dsh_result`, `dsh_events`, `dsh_cancel`, `dsh_cleanup`, and
-`dsh_delete`. Do not ask the user to repeat or type ids that the conversation
+`dsh_wait`, `dsh_result`, `dsh_events`, `dsh_steer`, `dsh_cancel`, `dsh_cleanup`,
+and `dsh_delete`. Do not ask the user to repeat or type ids that the conversation
 already contains.
 
 ## Parallel workflow
@@ -136,10 +145,40 @@ is running to read its tool calls, text, thinking, and status events. Keep the
 returned `next_cursor` and pass it to the next call instead of rereading the
 whole stream.
 
+The server also runs pure watchdog heuristics. `dsh_status`, `dsh_wait`,
+`dsh_group` and the dashboard expose each job's current `alerts`:
+`stalled` (no events), `loop` (the same tool call repeated), `tool_errors`
+(repeated failed tool results), and `budget` (steps or estimated cost above a
+configured limit). Alerts are warn-only by default; the operator can set
+`DSH_WORKERS_WATCHDOG_ACTION=cancel` to stop budget-exceeding jobs.
+
+`dsh_wait` returns early with `alerted: [job_id ...]` when a watched job gains a
+new alert kind it did not have when the wait began. Before steering, inspect the
+job with `dsh_events` (using its `next_cursor`) and `dsh_status` to understand
+what it is actually doing. Do not steer on a single weak signal, and never steer
+a healthy job just to chat.
+
 Do not claim these workers appear in Claude's native subagent panel or the DSH
 TUI side panel. They are separate DSH headless processes. To inspect them
 visually, use the global `/dsh-ui` command, which opens the standalone
 `dsh-workers` dashboard, or `/dsh-watch <job_id>` to focus one job.
+
+## Steering
+
+Use `dsh_steer` when a worker is off task, made a wrong assumption, or needs a
+corrective instruction that must build on its current session and working
+directory. For an active job the server cancels it, waits for it to settle, and
+resumes the same DSH session with your message. For a terminal job it skips the
+cancel and starts a follow-up in that session.
+
+The steered worker does not see this conversation. The message must be
+self-contained: say what is wrong, what to do instead, the relevant paths, and
+the constraints. The resumed job inherits the original group, access, cwd,
+worktree, profile and timeout; it gets a new `job_id` and a `↻` label, and the
+original stays available as a `cancelled`/`steered` record.
+
+A job cancelled before DSH emitted a session id cannot be resumed; `dsh_steer`
+returns `resume_unavailable` and leaves the original record intact.
 
 ## Lifecycle and deletion
 

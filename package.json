@@ -27,7 +27,7 @@
     "typecheck": "tsc -b",
     "start": "node dist/server.js",
     "ui": "node dist/ui.js",
-    "test": "tsc -b && node scripts/copy-assets.mjs && vitest run",
+    "test": "tsc -b && node scripts/copy-assets.mjs && vitest run --exclude 'claude/**'",
     "lint": "biome check .",
     "format": "biome format --write .",
     "install:claude-commands": "bash scripts/install-claude-commands.sh"

@@ -1,0 +1,18 @@
+{
+  "name": "dsh-workers-pane",
+  "version": "0.1.0",
+  "description": "Shows DeepSeek Harness (DSH) worker jobs live in a side pane next to the Claude Code conversation.",
+  "author": {
+    "name": "DSH Workers contributors"
+  },
+  "types": "./types/index.d.ts",
+  "userConfig": {
+    "stateDir": {
+      "type": "string",
+      "title": "DSH workers state directory",
+      "description": "Where DSH workers keeps jobs/. Defaults to $DSH_WORKERS_STATE_DIR, then $XDG_STATE_HOME/dsh-workers, then $HOME/.local/state/dsh-workers.",
+      "required": false,
+      "default": ""
+    }
+  }
+}

@@ -11,6 +11,8 @@ export type JobStatus =
   | 'interrupted';
 
 export type FailureReason =
+  | 'steered'
+  | 'budget_exceeded'
   | 'spawn_error'
   | 'driver_error'
   | 'turn_error'
@@ -36,6 +38,14 @@ export interface Usage {
   cacheReadTokens?: number;
   cacheWriteTokens?: number;
   reasoningTokens?: number;
+}
+
+export type AlertKind = 'stalled' | 'loop' | 'tool_errors' | 'budget';
+
+export interface JobAlert {
+  kind: AlertKind;
+  message: string;
+  since: string;
 }
 
 export interface WorktreeInfo {
@@ -64,6 +74,9 @@ export interface WorktreeChanges {
 export interface JobSummary {
   job_id: string;
   label?: string;
+  profile: string;
+  provider?: string;
+  model?: string;
   group_id: string;
   group_name: string;
   owner_id: string;
@@ -85,11 +98,14 @@ export interface JobSummary {
   last_event_s_ago?: number;
   malformed_lines: number;
   usage?: Usage;
+  cost_usd?: number;
+  alerts: JobAlert[];
 }
 
 export interface StartInput {
   task: string;
   label?: string;
+  profile?: string;
   group_id?: string;
   group_name?: string;
   cwd?: string;
@@ -98,11 +114,16 @@ export interface StartInput {
   base_ref?: string;
   timeout_s?: number;
   resume_job_id?: string;
+  /** Internal: set by dsh_steer, never accepted by the dsh_start tool schema. */
+  steered_from?: string;
 }
 
 export interface StartResult {
   job_id: string;
   status: JobStatus;
+  profile: string;
+  provider?: string;
+  model?: string;
   group_id: string;
   group_name: string;
   queue_position?: number;
@@ -131,4 +152,6 @@ export interface WaitOutput {
   settled: string[];
   timed_out: boolean;
   wait_aborted?: boolean;
+  /** Jobs that gained a new alert kind since this wait began. */
+  alerted: string[];
 }

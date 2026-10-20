@@ -152,6 +152,15 @@
     .job-sub { display: flex; gap: 9px; margin-top: 6px; padding-left: 15px; color: var(--faint); font: 10px var(--mono); }
     .job-sub span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
     .job-sub .grow { flex: 1; }
+    .job-alert {
+      margin-top: 5px;
+      padding-left: 15px;
+      color: var(--warn);
+      font: 10px var(--mono);
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
     .content { min-width: 0; min-height: 0; overflow: hidden; }
     .empty {
       display: grid;
@@ -233,6 +242,8 @@
       font: 10px var(--mono);
     }
     .meta-item b { color: var(--text); font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .meta-item.alert-item { color: var(--warn); border-color: color-mix(in srgb, var(--warn) 35%, var(--border)); }
+    .meta-item.alert-item b { color: var(--warn); }
     .toolbar {
       display: flex;
       align-items: center;
@@ -462,8 +473,29 @@
       if (typeof total === 'number') return total;
       const input = usage.inputTokens ?? usage.input_tokens ?? 0;
       const output = usage.outputTokens ?? usage.output_tokens ?? 0;
-      const sum = (typeof input === 'number' ? input : 0) + (typeof output === 'number' ? output : 0);
+      const cacheRead = usage.cacheReadTokens ?? usage.cache_read_tokens ?? 0;
+      const cacheWrite = usage.cacheWriteTokens ?? usage.cache_write_tokens ?? 0;
+      const sum =
+        (typeof input === 'number' ? input : 0) +
+        (typeof output === 'number' ? output : 0) +
+        (typeof cacheRead === 'number' ? cacheRead : 0) +
+        (typeof cacheWrite === 'number' ? cacheWrite : 0);
       return sum > 0 ? sum : null;
+    }
+
+    function formatCompact(value) {
+      if (typeof value !== 'number' || !Number.isFinite(value)) return '—';
+      if (value >= 1e9) return Number((value / 1e9).toFixed(1)) + 'B';
+      if (value >= 1e6) return Number((value / 1e6).toFixed(1)) + 'M';
+      if (value >= 1e3) return Number((value / 1e3).toFixed(1)) + 'k';
+      return String(Math.round(value));
+    }
+
+    function formatUsd(value) {
+      if (typeof value !== 'number' || !Number.isFinite(value)) return '—';
+      if (value >= 1) return '$' + value.toFixed(2);
+      if (value >= 0.01) return '$' + value.toFixed(4);
+      return '$' + value.toFixed(6);
     }
 
     function renderRetention() {
@@ -505,6 +537,13 @@
       });
     }
 
+    function alertsText(job) {
+      if (!Array.isArray(job.alerts)) return '';
+      return job.alerts
+        .map((alert) => '⚠ ' + alert.kind + ' · ' + alert.message)
+        .join(' · ');
+    }
+
     function renderJobs() {
       const previousScroll = jobList.scrollTop;
       jobList.replaceChildren();
@@ -543,8 +582,19 @@
           const sub = el('div', 'job-sub');
           sub.append(el('span', '', job.steps + ' steps'));
           sub.append(el('span', '', job.tool_calls + ' tools'));
+          if (typeof job.cost_usd === 'number') {
+            const cost = el('span', '', formatUsd(job.cost_usd));
+            cost.title = 'Estimated USD';
+            sub.append(cost);
+          }
           sub.append(el('span', 'grow', formatElapsed(job.elapsed_s)));
           button.append(sub);
+          const alerts = alertsText(job);
+          if (alerts) {
+            const alert = el('div', 'job-alert', alerts);
+            alert.title = alerts;
+            button.append(alert);
+          }
           body.append(button);
         }
         section.append(body);
@@ -587,11 +637,40 @@
       if (job.access) addMeta('access', job.access);
       if (job.isolation) addMeta('isolation', job.isolation);
       if (job.session_id) addMeta('session', job.session_id.slice(0, 18), job.session_id);
-      const tokens = totalTokens(job.usage);
-      if (tokens !== null) addMeta('tokens', tokens.toLocaleString());
+      const usage = job.usage;
+      if (usage) {
+        const input = usage.inputTokens ?? 0;
+        const output = usage.outputTokens ?? 0;
+        const cacheRead = usage.cacheReadTokens ?? 0;
+        const cacheWrite = usage.cacheWriteTokens ?? 0;
+        const total = totalTokens(usage);
+        addMeta('tokens in', formatCompact(input), input.toLocaleString() + ' input tokens');
+        addMeta('tokens out', formatCompact(output), output.toLocaleString() + ' output tokens');
+        addMeta('cache read', formatCompact(cacheRead), cacheRead.toLocaleString() + ' cache-read tokens');
+        if (cacheWrite > 0) {
+          addMeta('cache write', formatCompact(cacheWrite), cacheWrite.toLocaleString() + ' cache-write tokens');
+        }
+        if (total !== null) {
+          addMeta('tokens total', formatCompact(total), total.toLocaleString() + ' tokens processed across all steps');
+        }
+        if (typeof job.cost_usd === 'number') {
+          const modelName = [job.provider, job.model].filter(Boolean).join(' / ');
+          addMeta('cost', formatUsd(job.cost_usd), 'Estimated USD' + (modelName ? ' for ' + modelName : ''));
+        } else {
+          addMeta('cost', 'n/d', 'No pricing metadata for this run');
+        }
+      }
       if (job.worktree) addMeta('worktree', job.worktree.branch || job.worktree.path, job.worktree.path);
       addMeta('started', formatTime(job.started_at));
       addMeta('last event', formatTime(job.last_event_at));
+      const alerts = alertsText(job);
+      if (alerts) {
+        const alertItem = el('span', 'meta-item alert-item');
+        alertItem.append(el('span', '', '⚠ alerts'));
+        alertItem.append(el('b', '', alerts));
+        alertItem.title = alerts;
+        $('job-meta').append(alertItem);
+      }
       const deleteButton = $('delete-job');
       deleteButton.disabled = activeStatus(job.status);
       deleteButton.title = deleteButton.disabled

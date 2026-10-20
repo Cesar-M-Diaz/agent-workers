@@ -6,10 +6,11 @@ import { basename, join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { deleteJobRecord, JobAdminError, pruneExpiredJobs } from './admin.js';
 import type { Config } from './config.js';
-import { resolveApiKey } from './config.js';
+import { resolveApiKey, resolveOpenCodeGoApiKey, resolveOpenRouterChatApiKey } from './config.js';
 import { readEventPage } from './events.js';
 import { NdjsonFold } from './ndjson.js';
 import { pathOverlaps, resolveAllowedPath } from './paths.js';
+import { estimateCostUsd } from './pricing.js';
 import {
   killTree,
   killTreeByPid,
@@ -22,6 +23,7 @@ import type {
   AccessMode,
   FailureReason,
   Isolation,
+  JobAlert,
   JobStatus,
   JobSummary,
   StartInput,
@@ -32,9 +34,22 @@ import type {
   WorktreeChanges,
   WorktreeInfo,
 } from './types.js';
+import { computeAlerts, type WatchdogOptions } from './watchdog.js';
 import { cleanupWorktree, computeWorktreeChanges, createWorktree } from './worktree.js';
 
 const MAX_STDERR = 64 * 1024;
+const WATCHDOG_INTERVAL_MS = 5_000;
+const STEER_SETTLE_TIMEOUT_MS = 30_000;
+const STEER_PREFACE =
+  'The supervisor interrupted your previous run to steer you. Your earlier work in this session and working directory is preserved; check the current state before continuing.\n\nNew instruction:\n';
+
+function steerLabel(previous: string | undefined, fallbackId: string): string {
+  const base = previous?.trim() || fallbackId;
+  const stacked = /\s↻(\d*)$/.exec(base);
+  const suffix = stacked === null ? ' ↻' : ` ↻${(stacked[1] ? Number(stacked[1]) : 1) + 1}`;
+  const stem = stacked === null ? base : base.slice(0, stacked.index);
+  return `${stem.slice(0, Math.max(0, 80 - suffix.length))}${suffix}`;
+}
 
 export class JobError extends Error {
   readonly code: string;
@@ -52,6 +67,9 @@ interface Job {
   groupName: string;
   ownerId: string;
   task: string;
+  profile: string;
+  provider?: string;
+  model?: string;
   cwd: string;
   access: AccessMode;
   isolation: Isolation;
@@ -65,15 +83,17 @@ interface Job {
   pgidStartTime?: string;
   sessionId?: string;
   resumeOf?: string;
+  steeredFrom?: string;
   worktree?: WorktreeInfo;
   finalText?: string;
   stderrTail: string;
   errorMessage?: string;
+  alerts: JobAlert[];
   fold: NdjsonFold;
   child?: ChildProcessWithoutNullStreams;
   eventStream?: WriteStream;
   timeoutTimer?: NodeJS.Timeout;
-  cancelReason?: 'cancelled' | 'timed_out';
+  cancelReason?: 'cancelled' | 'timed_out' | 'steered' | 'budget_exceeded';
   terminal: boolean;
   killedPids?: number[];
   survivors?: number[];
@@ -87,6 +107,13 @@ interface Job {
   dir: string;
 }
 
+interface ProfileStatus {
+  profile: string;
+  profiles: string[];
+  provider?: string;
+  model?: string;
+}
+
 interface PersistedJob {
   id: string;
   label?: string;
@@ -94,6 +121,10 @@ interface PersistedJob {
   groupName?: string;
   ownerId?: string;
   cwd: string;
+  profile?: string;
+  provider?: string;
+  model?: string;
+  costUsd?: number;
   access: AccessMode;
   isolation: Isolation;
   timeoutMs: number;
@@ -106,9 +137,11 @@ interface PersistedJob {
   pgidStartTime?: string;
   sessionId?: string;
   resumeOf?: string;
+  steeredFrom?: string;
   worktree?: WorktreeInfo;
   stderrTail: string;
   errorMessage?: string;
+  alerts?: JobAlert[];
   malformedLines: number;
   eventsCount: number;
   toolCalls: number;
@@ -141,6 +174,10 @@ function persisted(job: Job): PersistedJob {
     groupName: job.groupName,
     ownerId: job.ownerId,
     cwd: job.cwd,
+    profile: job.profile,
+    provider: job.provider,
+    model: job.model,
+    costUsd: estimateCostUsd(job.provider, job.model, job.fold.state.usage),
     access: job.access,
     isolation: job.isolation,
     timeoutMs: job.timeoutMs,
@@ -153,9 +190,11 @@ function persisted(job: Job): PersistedJob {
     pgidStartTime: job.pgidStartTime,
     sessionId: job.sessionId ?? job.fold.state.sessionId,
     resumeOf: job.resumeOf,
+    steeredFrom: job.steeredFrom,
     worktree: job.worktree,
     stderrTail: job.stderrTail,
     errorMessage: job.errorMessage ?? job.fold.state.errorMessage,
+    alerts: job.alerts,
     malformedLines: job.fold.state.malformedLines,
     eventsCount: job.fold.state.eventsCount,
     toolCalls: job.fold.state.toolCalls,
@@ -191,6 +230,9 @@ function fromPersisted(saved: PersistedJob): Job {
     ownerId: saved.ownerId ?? 'unknown',
     task: '',
     cwd: saved.cwd,
+    profile: saved.profile ?? 'work-openrouter',
+    provider: saved.provider,
+    model: saved.model,
     access: saved.access,
     isolation: saved.isolation,
     timeoutMs: saved.timeoutMs,
@@ -203,9 +245,11 @@ function fromPersisted(saved: PersistedJob): Job {
     pgidStartTime: saved.pgidStartTime,
     sessionId: saved.sessionId,
     resumeOf: saved.resumeOf,
+    steeredFrom: saved.steeredFrom,
     worktree: saved.worktree,
     stderrTail: saved.stderrTail,
     errorMessage: saved.errorMessage,
+    alerts: Array.isArray(saved.alerts) ? saved.alerts : [],
     fold,
     terminal: !['queued', 'starting', 'running'].includes(saved.status),
     killedPids: saved.killedPids,
@@ -225,20 +269,26 @@ export class JobManager {
   private readonly running = new Set<string>();
   private readonly writeLocks = new Map<string, string>();
   private readonly sessionLocks = new Map<string, string>();
+  private readonly steering = new Set<string>();
   private readonly ownerId = randomUUID();
   private readonly ownerStartedAt = new Date().toISOString();
   private defaultGroupId: string;
   private defaultGroupName: string;
   private dispatchScheduled = false;
   private shuttingDown = false;
+  private watchdogTimer?: NodeJS.Timeout;
   private dshVersion = 'unavailable';
   private apiKey?: string;
-  private readyPromise?: Promise<void>;
+  private openRouterChatApiKey?: string;
+  private openCodeGoApiKey?: string;
+  private activeProfile: string;
+  private readonly profileReady = new Map<string, Promise<void>>();
 
   constructor(private readonly config: Config) {
     this.defaultGroupId = process.env.DSH_WORKERS_SESSION_ID?.trim() || this.ownerId;
     this.defaultGroupName =
       process.env.DSH_WORKERS_SESSION_NAME?.trim() || basename(process.cwd()) || 'dsh-workers';
+    this.activeProfile = process.env.DSH_WORKERS_PROFILE?.trim() || 'work-openrouter';
   }
 
   async init(): Promise<void> {
@@ -249,9 +299,93 @@ export class JobManager {
       this.config.worktreeRoot,
     );
     this.apiKey = await resolveApiKey(this.config);
+    this.openRouterChatApiKey = await resolveOpenRouterChatApiKey(this.config);
+    this.openCodeGoApiKey = await resolveOpenCodeGoApiKey(this.config);
+    const profiles = await this.availableProfiles();
+    if (
+      !process.env.DSH_WORKERS_PROFILE?.trim() &&
+      !profiles.includes(this.activeProfile) &&
+      profiles.includes('headless')
+    ) {
+      this.activeProfile = 'headless';
+    }
+    await this.resolveProfile(this.activeProfile);
     const version = await runCapture(this.config.dshBin, ['--version'], { timeoutMs: 10_000 });
     this.dshVersion = version.code === 0 ? version.stdout.trim() : 'unavailable';
     await this.loadPreviousJobs();
+    this.startWatchdog();
+  }
+
+  private startWatchdog(): void {
+    if (this.watchdogTimer !== undefined) return;
+    this.watchdogTimer = setInterval(() => {
+      for (const job of this.jobs.values()) {
+        if (!job.terminal) this.refreshAlerts(job, true);
+      }
+    }, WATCHDOG_INTERVAL_MS);
+    this.watchdogTimer.unref();
+  }
+
+  private async availableProfiles(): Promise<string[]> {
+    try {
+      const entries = await readdir(join(this.config.dshHome, 'profiles'), {
+        withFileTypes: true,
+      });
+      return entries
+        .filter((entry) => entry.isDirectory())
+        .map((entry) => entry.name)
+        .sort();
+    } catch {
+      return [];
+    }
+  }
+
+  private async resolveProfile(name: string): Promise<string> {
+    const profile = name.trim();
+    if (!/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(profile)) {
+      throw new JobError('unknown_profile', `invalid profile name: ${profile}`);
+    }
+    const profiles = await this.availableProfiles();
+    if (!profiles.includes(profile)) {
+      throw new JobError(
+        'unknown_profile',
+        `unknown profile ${profile}; available: ${profiles.join(', ') || 'none'}`,
+      );
+    }
+    return profile;
+  }
+
+  private async readProfileMetadata(profile: string): Promise<{
+    provider?: string;
+    model?: string;
+  }> {
+    try {
+      const raw = JSON.parse(
+        await readFile(join(this.config.dshHome, 'profiles', profile, 'metadata.json'), 'utf8'),
+      ) as Record<string, unknown>;
+      return {
+        ...(typeof raw.provider === 'string' && raw.provider.trim()
+          ? { provider: raw.provider.trim() }
+          : {}),
+        ...(typeof raw.model === 'string' && raw.model.trim() ? { model: raw.model.trim() } : {}),
+      };
+    } catch {
+      return {};
+    }
+  }
+
+  async profileStatus(): Promise<ProfileStatus> {
+    const profiles = await this.availableProfiles();
+    return {
+      profile: this.activeProfile,
+      profiles,
+      ...(await this.readProfileMetadata(this.activeProfile)),
+    };
+  }
+
+  async setProfile(name: string): Promise<ProfileStatus> {
+    this.activeProfile = await this.resolveProfile(name);
+    return this.profileStatus();
   }
 
   private async loadPreviousJobs(): Promise<void> {
@@ -372,12 +506,16 @@ export class JobManager {
       Math.max(60_000, (input.timeout_s ?? Math.round(this.config.defaultTimeoutMs / 1000)) * 1000),
     );
 
+    let profile: string;
+    let provider: string | undefined;
+    let model: string | undefined;
     let cwd: string;
     let access: AccessMode;
     let isolation: Isolation;
     let worktree: WorktreeInfo | undefined;
     let sessionId: string | undefined;
     let resumeOf: string | undefined;
+    const steeredFrom = input.steered_from;
     let groupId = input.group_id?.trim();
     let groupName = input.group_name?.trim();
 
@@ -385,11 +523,12 @@ export class JobManager {
       if (
         input.cwd !== undefined ||
         input.isolation !== undefined ||
-        input.base_ref !== undefined
+        input.base_ref !== undefined ||
+        input.profile !== undefined
       ) {
         throw new JobError(
           'resume_unavailable',
-          'resume_job_id cannot be combined with cwd, isolation or base_ref',
+          'resume_job_id cannot be combined with cwd, isolation, base_ref or profile',
         );
       }
       const original = this.jobs.get(input.resume_job_id);
@@ -398,6 +537,15 @@ export class JobManager {
         throw new JobError('resume_unavailable', 'the original job is still active');
       if (!original.sessionId)
         throw new JobError('resume_unavailable', 'the original job has no session id');
+      profile = original.profile;
+      await this.resolveProfile(profile);
+      provider = original.provider;
+      model = original.model;
+      if (!provider || !model) {
+        const metadata = await this.readProfileMetadata(profile);
+        provider ??= metadata.provider;
+        model ??= metadata.model;
+      }
       if (original.worktree) {
         if (original.cleaned)
           throw new JobError('resume_unavailable', 'the original worktree was cleaned');
@@ -436,6 +584,10 @@ export class JobManager {
         this.writeLocks.set(cwd, id);
       }
     } else {
+      profile = await this.resolveProfile(input.profile ?? this.activeProfile);
+      const metadata = await this.readProfileMetadata(profile);
+      provider = metadata.provider;
+      model = metadata.model;
       cwd = await this.resolveCwd(input.cwd);
       access = input.access ?? 'read-only';
       isolation = input.isolation ?? (access === 'workspace-write' ? 'worktree' : 'none');
@@ -476,6 +628,9 @@ export class JobManager {
       groupName: resolvedGroupName,
       ownerId: this.ownerId,
       task: input.task,
+      profile,
+      provider,
+      model,
       cwd,
       access,
       isolation,
@@ -484,8 +639,11 @@ export class JobManager {
       createdAt: now,
       sessionId,
       resumeOf,
+      steeredFrom,
       worktree,
       stderrTail: '',
+      errorMessage: undefined,
+      alerts: [],
       fold: new NdjsonFold(),
       terminal: false,
       eventsPath: join(dir, 'events.ndjson'),
@@ -502,6 +660,9 @@ export class JobManager {
     return {
       job_id: id,
       status: job.status,
+      profile: job.profile,
+      provider: job.provider,
+      model: job.model,
       group_id: job.groupId,
       group_name: job.groupName,
       ...(job.status === 'queued' ? { queue_position: queuePosition } : {}),
@@ -542,11 +703,12 @@ export class JobManager {
     });
   }
 
-  private async ensureReady(): Promise<void> {
-    if (!this.readyPromise) {
-      this.readyPromise = (async () => {
+  private ensureReady(profile: string): Promise<void> {
+    let ready = this.profileReady.get(profile);
+    if (!ready) {
+      ready = (async () => {
         const env = this.childEnv(1);
-        const result = await runCapture(this.config.dshBin, ['--profile', 'headless', '--help'], {
+        const result = await runCapture(this.config.dshBin, ['--profile', profile, '--help'], {
           cwd: this.config.allowedRoots[0],
           env,
           timeoutMs: 30_000,
@@ -554,12 +716,14 @@ export class JobManager {
         if (result.code !== 0) {
           throw new JobError(
             'dsh_unavailable',
-            `cannot initialize dsh headless profile: ${result.stderr.trim()}`,
+            `cannot initialize dsh profile ${profile}: ${result.stderr.trim()}`,
           );
         }
       })();
+      this.profileReady.set(profile, ready);
+      void ready.catch(() => this.profileReady.delete(profile));
     }
-    return await this.readyPromise;
+    return ready;
   }
 
   private childEnv(depth: number): Record<string, string> {
@@ -573,15 +737,20 @@ export class JobManager {
     env.DSH_TELEMETRY_DISABLED = '1';
     env.DSH_WORKERS_DEPTH = String(depth);
     if (this.apiKey) env.DEEPSEEK_API_KEY = this.apiKey;
+    if (this.openRouterChatApiKey) env.OPENROUTER_CHAT_API_KEY = this.openRouterChatApiKey;
+    if (this.openCodeGoApiKey) env.OPENCODE_GO_API_KEY = this.openCodeGoApiKey;
     return env;
   }
 
   private async launch(job: Job): Promise<void> {
-    await this.ensureReady();
+    await this.ensureReady(job.profile);
+    // A queued/starting job can be cancelled (or steered) while the profile
+    // check is in flight; do not spawn a process for a job that already settled.
+    if (job.terminal || this.shuttingDown) return;
     const depth = Number(process.env.DSH_WORKERS_DEPTH ?? 0) + 1;
     const env = this.childEnv(depth);
     env.DSH_PERMISSION_MODE = job.access === 'workspace-write' ? 'workspace-write' : 'read-only';
-    const args = ['--profile', 'headless', '--json'];
+    const args = ['--profile', job.profile, '--json'];
     if (job.sessionId) args.push('--session-id', job.sessionId);
     const child = spawnDsh({
       dshBin: this.config.dshBin,
@@ -606,7 +775,10 @@ export class JobManager {
         }, 1000);
       }
     });
-    child.stdout.on('data', (chunk: Buffer) => job.fold.push(chunk));
+    child.stdout.on('data', (chunk: Buffer) => {
+      job.fold.push(chunk);
+      this.refreshAlerts(job, false);
+    });
     child.stderr.on('data', (chunk: Buffer) => {
       job.stderrTail = appendTail(job.stderrTail, chunk.toString('utf8'));
     });
@@ -660,6 +832,14 @@ export class JobManager {
     }
     if (job.cancelReason === 'cancelled') {
       await this.settle(job, 'cancelled', 'cancelled', { cleanTree: false });
+      return;
+    }
+    if (job.cancelReason === 'steered') {
+      await this.settle(job, 'cancelled', 'steered', { cleanTree: false });
+      return;
+    }
+    if (job.cancelReason === 'budget_exceeded') {
+      await this.settle(job, 'cancelled', 'budget_exceeded', { cleanTree: false });
       return;
     }
     if (job.cancelReason === 'timed_out') {
@@ -730,11 +910,19 @@ export class JobManager {
   ): Promise<{ job_id: string; status: JobStatus; killed_pids: number[]; survivors: number[] }> {
     const job = await this.requireJob(jobId);
     if (job.terminal) throw new JobError('already_settled', 'job is already settled');
-    job.cancelReason = 'cancelled';
+    return this.cancelJob(job, 'cancelled');
+  }
+
+  private async cancelJob(
+    job: Job,
+    reason: 'cancelled' | 'steered' | 'budget_exceeded',
+  ): Promise<{ job_id: string; status: JobStatus; killed_pids: number[]; survivors: number[] }> {
+    if (job.terminal) throw new JobError('already_settled', 'job is already settled');
+    job.cancelReason = reason;
     if (job.status === 'queued') {
       const index = this.queue.indexOf(job);
       if (index >= 0) this.queue.splice(index, 1);
-      await this.settle(job, 'cancelled', 'cancelled', { cleanTree: false });
+      await this.settle(job, 'cancelled', reason, { cleanTree: false });
       return { job_id: job.id, status: job.status, killed_pids: [], survivors: [] };
     }
     if (job.child) {
@@ -744,7 +932,7 @@ export class JobManager {
       await waitForExit(job.child, 6_000);
     }
     if (!job.terminal) {
-      await this.settle(job, 'cancelled', 'cancelled', { cleanTree: false });
+      await this.settle(job, 'cancelled', reason, { cleanTree: false });
     }
     return {
       job_id: job.id,
@@ -754,6 +942,111 @@ export class JobManager {
     };
   }
 
+  private async waitForTerminal(job: Job, timeoutMs: number): Promise<boolean> {
+    const deadline = Date.now() + timeoutMs;
+    while (!job.terminal && Date.now() < deadline) {
+      await delay(50);
+    }
+    return job.terminal;
+  }
+
+  async steer(input: {
+    job_id: string;
+    message: string;
+    timeout_s?: number;
+  }): Promise<Record<string, unknown>> {
+    if (this.shuttingDown)
+      throw new JobError('dsh_unavailable', 'the worker manager is shutting down');
+    if (this.steering.has(input.job_id)) {
+      throw new JobError('resume_unavailable', 'a steer is already in progress for this job');
+    }
+    this.steering.add(input.job_id);
+    try {
+      const original = await this.requireJob(input.job_id);
+      let cancelled = false;
+      if (!original.terminal) {
+        try {
+          await this.cancelJob(original, 'steered');
+          cancelled = true;
+        } catch (err) {
+          if (!(err instanceof JobError) || err.code !== 'already_settled') throw err;
+        }
+        if (!(await this.waitForTerminal(original, STEER_SETTLE_TIMEOUT_MS))) {
+          throw new JobError(
+            'steer_timeout',
+            'the original job did not become terminal after cancellation',
+          );
+        }
+      }
+      const sessionId = original.sessionId ?? original.fold.state.sessionId;
+      if (!sessionId) {
+        throw new JobError(
+          'resume_unavailable',
+          cancelled
+            ? 'the original job was cancelled before dsh emitted a session id'
+            : 'the original job has no session id',
+        );
+      }
+      const started = await this.start({
+        task: `${STEER_PREFACE}${input.message}`,
+        label: steerLabel(original.label, original.id),
+        resume_job_id: original.id,
+        group_id: original.groupId,
+        group_name: original.groupName,
+        timeout_s: input.timeout_s ?? Math.round(original.timeoutMs / 1000),
+        steered_from: original.id,
+      });
+      const job = this.jobs.get(started.job_id);
+      if (!job) throw new JobError('internal_error', 'the steered job disappeared');
+      return {
+        steered_job_id: job.id,
+        cancelled,
+        job_id: original.id,
+        status: job.status,
+        label: job.label,
+        group_id: job.groupId,
+        group_name: job.groupName,
+        ...(job.status === 'queued' ? { queue_position: this.queue.indexOf(job) + 1 } : {}),
+        cwd: job.cwd,
+        steered_from: original.id,
+      };
+    } finally {
+      this.steering.delete(input.job_id);
+    }
+  }
+
+  private watchdogOptions(): WatchdogOptions {
+    return {
+      stallMs: this.config.stallMs,
+      loopRepeat: this.config.loopRepeat,
+      toolErrorLimit: this.config.toolErrorLimit,
+      maxSteps: this.config.maxSteps,
+      maxCostUsd: this.config.maxCostUsd,
+      action: this.config.watchdogAction,
+    };
+  }
+
+  private refreshAlerts(job: Job, persist: boolean): void {
+    if (job.terminal) return;
+    const previous = job.alerts;
+    const alerts = computeAlerts(job.fold.state, this.watchdogOptions(), {
+      now: Date.now(),
+      costUsd: estimateCostUsd(job.provider, job.model, job.fold.state.usage),
+      previous,
+      activeSince: Date.parse(job.startedAt ?? job.createdAt),
+    });
+    const changed = JSON.stringify(alerts) !== JSON.stringify(previous);
+    job.alerts = alerts;
+    if (changed && persist) void this.writeJob(job).catch(() => undefined);
+    if (
+      this.config.watchdogAction === 'cancel' &&
+      !job.cancelReason &&
+      alerts.some((alert) => alert.kind === 'budget')
+    ) {
+      void this.cancelJob(job, 'budget_exceeded').catch(() => undefined);
+    }
+  }
+
   async wait(
     jobIds: readonly string[],
     mode: 'any' | 'all',
@@ -761,15 +1054,31 @@ export class JobManager {
     signal?: AbortSignal,
   ): Promise<WaitOutput> {
     const jobs = await Promise.all(jobIds.map((id) => this.requireJob(id)));
+    const baseline = new Map(
+      jobs.map((job) => [job.id, new Set(job.alerts.map((alert) => alert.kind))]),
+    );
     const started = Date.now();
     let aborted = false;
     while (true) {
+      for (const job of jobs) this.refreshAlerts(job, false);
+      const alerted = jobs
+        .filter((job) => job.alerts.some((alert) => !baseline.get(job.id)?.has(alert.kind)))
+        .map((job) => job.id);
       const settled = jobs.filter((job) => job.terminal).map((job) => job.id);
       if (mode === 'all' ? settled.length === jobs.length : settled.length > 0) {
         return {
           jobs: jobs.map((job) => this.summary(job)),
           settled,
           timed_out: false,
+          alerted,
+        };
+      }
+      if (alerted.length > 0) {
+        return {
+          jobs: jobs.map((job) => this.summary(job)),
+          settled,
+          timed_out: false,
+          alerted,
         };
       }
       const remaining = timeoutMs - (Date.now() - started);
@@ -778,6 +1087,7 @@ export class JobManager {
           jobs: jobs.map((job) => this.summary(job)),
           settled,
           timed_out: true,
+          alerted,
           ...(aborted ? { wait_aborted: true } : {}),
         };
       }
@@ -791,6 +1101,7 @@ export class JobManager {
             settled: jobs.filter((job) => job.terminal).map((job) => job.id),
             timed_out: false,
             wait_aborted: true,
+            alerted,
           };
         }
         throw err;
@@ -829,6 +1140,11 @@ export class JobManager {
       status: job.status,
       reason: job.reason,
       session_id: job.sessionId,
+      profile: job.profile,
+      provider: job.provider,
+      model: job.model,
+      usage: job.fold.state.usage,
+      cost_usd: estimateCostUsd(job.provider, job.model, job.fold.state.usage),
       final: final === undefined ? undefined : final.slice(0, maxChars),
       final_truncated: final !== undefined && final.length > maxChars,
       final_path: final !== undefined ? job.finalPath : undefined,
@@ -899,6 +1215,10 @@ export class JobManager {
   async shutdown(): Promise<void> {
     if (this.shuttingDown) return;
     this.shuttingDown = true;
+    if (this.watchdogTimer !== undefined) {
+      clearInterval(this.watchdogTimer);
+      this.watchdogTimer = undefined;
+    }
     for (const job of this.queue.splice(0)) {
       await this.settle(job, 'interrupted', 'interrupted', { cleanTree: false });
     }
@@ -956,6 +1276,9 @@ export class JobManager {
     return {
       job_id: job.id,
       label: job.label,
+      profile: job.profile,
+      provider: job.provider,
+      model: job.model,
       group_id: job.groupId,
       group_name: job.groupName,
       owner_id: job.ownerId,
@@ -986,6 +1309,8 @@ export class JobManager {
         : undefined,
       malformed_lines: fold.malformedLines,
       usage: fold.usage,
+      cost_usd: estimateCostUsd(job.provider, job.model, fold.usage),
+      alerts: job.alerts,
     };
   }
 

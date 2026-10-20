@@ -18,6 +18,12 @@ export interface Config {
   useDshCredentials: boolean;
   credentialsFile: string;
   envAllow: string[];
+  stallMs: number;
+  loopRepeat: number;
+  toolErrorLimit: number;
+  maxSteps?: number;
+  maxCostUsd?: number;
+  watchdogAction: 'warn' | 'cancel';
 }
 
 function intEnv(name: string, fallback: number, min: number, max: number): number {
@@ -28,6 +34,36 @@ function intEnv(name: string, fallback: number, min: number, max: number): numbe
     throw new Error(`${name} must be an integer from ${min} to ${max}`);
   }
   return value;
+}
+
+function optionalIntEnv(name: string, min: number, max: number): number | undefined {
+  const raw = process.env[name];
+  if (raw === undefined || raw.trim() === '') return undefined;
+  const value = Number(raw);
+  if (!Number.isInteger(value) || value < min || value > max) {
+    throw new Error(`${name} must be an integer from ${min} to ${max}`);
+  }
+  return value;
+}
+
+function floatEnv(name: string, min: number, max: number): number | undefined {
+  const raw = process.env[name];
+  if (raw === undefined || raw.trim() === '') return undefined;
+  const value = Number(raw);
+  if (!Number.isFinite(value) || value < min || value > max) {
+    throw new Error(`${name} must be a number from ${min} to ${max}`);
+  }
+  return value;
+}
+
+function enumEnv<T extends string>(name: string, fallback: T, values: readonly T[]): T {
+  const raw = process.env[name];
+  if (raw === undefined || raw.trim() === '') return fallback;
+  const value = raw.trim().toLowerCase();
+  if (!values.includes(value as T)) {
+    throw new Error(`${name} must be one of: ${values.join(', ')}`);
+  }
+  return value as T;
 }
 
 function boolEnv(name: string, fallback = false): boolean {
@@ -150,19 +186,54 @@ export async function loadConfig(): Promise<Config> {
       ),
     ),
     envAllow: [...new Set(envAllow)],
+    stallMs: intEnv('DSH_WORKERS_STALL_S', 120, 30, 3600) * 1000,
+    loopRepeat: intEnv('DSH_WORKERS_LOOP_REPEAT', 4, 2, 20),
+    toolErrorLimit: intEnv('DSH_WORKERS_TOOL_ERROR_LIMIT', 5, 1, 50),
+    maxSteps: optionalIntEnv('DSH_WORKERS_MAX_STEPS', 1, 1_000_000),
+    maxCostUsd: floatEnv('DSH_WORKERS_MAX_COST_USD', 0, 1_000_000),
+    watchdogAction: enumEnv('DSH_WORKERS_WATCHDOG_ACTION', 'warn', ['warn', 'cancel']),
   };
 }
 
-/** The key is only read when the operator opted in. It is never logged or returned. */
-export async function resolveApiKey(config: Config): Promise<string | undefined> {
-  const direct = process.env.DEEPSEEK_API_KEY?.trim();
+type CredentialConfig = Pick<Config, 'useDshCredentials' | 'credentialsFile'>;
+
+/**
+ * Reads one credential reference from the environment or, when the operator
+ * opted in, from the DSH credential store. It is never logged.
+ */
+export async function resolveCredential(
+  config: CredentialConfig,
+  name: string,
+): Promise<string | undefined> {
+  const direct = process.env[name]?.trim();
   if (direct) return direct;
   if (!config.useDshCredentials) return undefined;
   try {
     const text = await readFile(config.credentialsFile, 'utf8');
-    const match = /^\s*DEEPSEEK_API_KEY:\s*(?:"([^"]+)"|'([^']+)'|([^\s#]+))\s*$/m.exec(text);
+    const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const pattern = `^\\s*${escaped}:\\s*(?:"([^"]+)"|'([^']+)'|([^\\s#]+))\\s*$`;
+    const match = new RegExp(pattern, 'm').exec(text);
     return match?.[1] ?? match?.[2] ?? match?.[3];
   } catch {
     return undefined;
   }
+}
+
+/** The key for workers that stay on the deepseek-official route. */
+export async function resolveApiKey(config: CredentialConfig): Promise<string | undefined> {
+  return resolveCredential(config, 'DEEPSEEK_API_KEY');
+}
+
+/** The key for worker profiles that route through OpenRouter. */
+export async function resolveOpenRouterChatApiKey(
+  config: CredentialConfig,
+): Promise<string | undefined> {
+  return resolveCredential(config, 'OPENROUTER_CHAT_API_KEY');
+}
+
+/** The key for worker profiles that route through OpenCode Go. */
+export async function resolveOpenCodeGoApiKey(
+  config: CredentialConfig,
+): Promise<string | undefined> {
+  return resolveCredential(config, 'OPENCODE_GO_API_KEY');
 }
