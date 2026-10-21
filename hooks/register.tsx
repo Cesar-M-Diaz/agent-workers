@@ -356,10 +356,12 @@ async function resolveStateDirFor(
   $: EngineInterface,
   options: PluginOptions,
 ): Promise<string> {
-  const option = typeof options.state_dir === 'string' ? options.state_dir : undefined
-  const dedicated =
+  const rawOption = typeof options.state_dir === 'string' ? options.state_dir : undefined
+  const option = rawOption?.trim() ? rawOption.trim() : undefined
+  const rawDedicated =
     (await $.env.get('AGENT_WORKERS_STATE_DIR')) ??
     (await $.env.get('DSH_WORKERS_STATE_DIR'))
+  const dedicated = rawDedicated?.trim() ? rawDedicated.trim() : undefined
   const xdgStateHome = await $.env.get('XDG_STATE_HOME')
   const home = await $.env.get('HOME')
 

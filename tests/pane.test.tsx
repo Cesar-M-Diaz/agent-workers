@@ -471,6 +471,12 @@ describe('jobs.ts', () => {
     expect(resolveStateDir({ home: '/home/u' })).toBe(
       '/home/u/.local/state/agent-workers',
     )
+    expect(resolveStateDir({ xdgStateHome: '/xdg', legacy: true })).toBe(
+      '/xdg/dsh-workers',
+    )
+    expect(resolveStateDir({ home: '/home/u', legacy: true })).toBe(
+      '/home/u/.local/state/dsh-workers',
+    )
   })
 })
 
