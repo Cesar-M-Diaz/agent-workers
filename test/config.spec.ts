@@ -1,4 +1,4 @@
-import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
@@ -119,6 +119,15 @@ describe('watchdog configuration', () => {
     config = await loadConfig();
     expect(config.maxConcurrent).toBe(5);
     expect(config.backend).toBe('dsh');
+  });
+
+  it('reuses an existing legacy dsh-workers state dir', async () => {
+    const xdg = join(roots.at(-1) ?? tmpdir(), 'xdg-legacy');
+    await mkdir(join(xdg, 'dsh-workers'), { recursive: true });
+    process.env.XDG_STATE_HOME = xdg;
+    delete process.env.AGENT_WORKERS_STATE_DIR;
+    const config = await loadConfig();
+    expect(config.stateDir).toBe(join(xdg, 'dsh-workers'));
   });
 
   it('parses the watchdog env vars and their float budget', async () => {

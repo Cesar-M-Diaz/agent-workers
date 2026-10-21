@@ -137,12 +137,12 @@ async function defaultStateDir(): Promise<string> {
   const base = process.env.XDG_STATE_HOME?.trim()
     ? process.env.XDG_STATE_HOME.trim()
     : join(homedir(), '.local', 'state');
-  const legacy = join(base, 'agent-workers');
+  const legacy = join(base, 'dsh-workers');
   try {
     const info = await stat(legacy);
     if (info.isDirectory()) return legacy;
   } catch {
-    // No previous agent-workers state; use the new name.
+    // No previous dsh-workers state; use the new name.
   }
   return join(base, 'agent-workers');
 }

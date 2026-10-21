@@ -1,4 +1,4 @@
-import { readFile } from 'node:fs/promises';
+import { readdir, readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 
 import type { Config } from '../config.js';
@@ -98,6 +98,15 @@ export class PiEngine implements Engine {
       return this.config.piModel?.trim() ? parseModel(this.config.piModel) : {};
     }
     return parseModel(profile);
+  }
+
+  async hasSession(sessionDir: string, sessionId: string): Promise<boolean> {
+    try {
+      const files = await readdir(join(sessionDir, 'pi-sessions'));
+      return files.some((name) => name.endsWith('.jsonl') && name.includes(sessionId));
+    } catch {
+      return false;
+    }
   }
 
   async ensureReady(): Promise<void> {

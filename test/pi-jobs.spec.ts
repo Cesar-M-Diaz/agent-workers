@@ -150,6 +150,22 @@ describe('JobManager pi backend', () => {
     expect(saved.sessionDir).toBe(join(config.stateDir, 'jobs', started.job_id));
   });
 
+  it('refuses to resume when the shared session directory was deleted', async () => {
+    const first = await manager.start({ task: 'first', access: 'read-only' });
+    await manager.wait([first.job_id], 'all', 10_000);
+    const steered = (await manager.steer({
+      job_id: first.job_id,
+      message: 'continue',
+    })) as Record<string, unknown>;
+    const steeredId = steered.steered_job_id as string;
+    await manager.wait([steeredId], 'all', 10_000);
+
+    await manager.delete(first.job_id, false);
+    await expect(manager.steer({ job_id: steeredId, message: 'again' })).rejects.toMatchObject({
+      code: 'resume_unavailable',
+    });
+  });
+
   it('treats a successful auto-retry as a success', async () => {
     const previous = process.env.PI_FIXTURE;
     process.env.PI_FIXTURE = join(process.cwd(), 'test/fixtures/pi/json-retry.jsonl');

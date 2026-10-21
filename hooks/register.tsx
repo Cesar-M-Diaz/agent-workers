@@ -369,10 +369,10 @@ async function resolveStateDirFor(
     return resolveStateDir({ option, dedicated, xdgStateHome, home })
   }
 
-  const current = resolveStateDir({ xdgStateHome, home })
-  if (await pathExists($, current)) return current
   const legacy = resolveStateDir({ xdgStateHome, home, legacy: true })
   if (await pathExists($, legacy)) return legacy
+  const current = resolveStateDir({ xdgStateHome, home })
+  if (await pathExists($, current)) return current
   return current
 }
 

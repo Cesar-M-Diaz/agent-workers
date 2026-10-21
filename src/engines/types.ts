@@ -46,6 +46,8 @@ export interface Engine {
   resolveProfile(name: string): Promise<string>;
   readProfileMetadata(profile: string): Promise<EngineProfileMetadata>;
   ensureReady(profile: string): Promise<void>;
+  /** Optional check that a session file still exists before resuming it. */
+  hasSession?(sessionDir: string, sessionId: string): Promise<boolean>;
   launch(spec: EngineLaunchSpec, task: string): Promise<EngineLaunchPlan>;
   createFold(onEvent: (line: string) => void): Fold;
 }

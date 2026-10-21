@@ -350,7 +350,7 @@ async function ensurePrivateDir(path, fallbackName) {
 }
 async function defaultStateDir() {
   const base = process.env.XDG_STATE_HOME?.trim() ? process.env.XDG_STATE_HOME.trim() : join3(homedir2(), ".local", "state");
-  const legacy = join3(base, "agent-workers");
+  const legacy = join3(base, "dsh-workers");
   try {
     const info = await stat3(legacy);
     if (info.isDirectory()) return legacy;

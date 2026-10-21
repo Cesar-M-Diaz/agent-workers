@@ -615,7 +615,7 @@ home, but the fallback state is temporary.
 - `worker_cancel`: cancel a queued or running job.
 - `worker_steer`: cancel a queued or running job (settled as `cancelled`/`steered`) and resume its session with a self-contained corrective message; a terminal job is resumed without a cancel.
 - `worker_cleanup`: remove a finished worktree and branch.
-- `worker_delete`: delete a terminal job record, logs, and its clean worktree.
+- `worker_delete`: delete a terminal job record, logs, and its clean worktree; refuses while another active job shares its session directory.
 
 ## Watchdogs
 
@@ -698,7 +698,9 @@ hooks module is reported there with its reason.
 - These are external dsh or pi processes, not native Claude Tasks or DSH TUI
   subagents. They do not appear in either harness's native subagent panel.
 - pi resume and steer use the original job's session directory; a pi job is read-only unless
-  `pi_allow_write` is enabled.
+  `pi_allow_write` is enabled. Deleting or pruning the root of a steer chain makes
+  later resumes fail with `resume_unavailable`, so keep the chain until it is no
+  longer needed.
 - pi reports a calculated cost, not a billed cost; the dashboard labels it as an
   estimate.
 - The dashboard is a monitor, not the DSH TUI or a live attach into a worker

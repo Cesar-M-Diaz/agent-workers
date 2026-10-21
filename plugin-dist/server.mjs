@@ -36675,7 +36675,7 @@ async function ensurePrivateDir(path, fallbackName) {
 }
 async function defaultStateDir() {
   const base = process.env.XDG_STATE_HOME?.trim() ? process.env.XDG_STATE_HOME.trim() : join(homedir2(), ".local", "state");
-  const legacy = join(base, "agent-workers");
+  const legacy = join(base, "dsh-workers");
   try {
     const info = await stat2(legacy);
     if (info.isDirectory()) return legacy;
@@ -36791,7 +36791,7 @@ async function resolveOpenCodeGoApiKey(config2) {
 // src/jobs.ts
 import { randomUUID } from "node:crypto";
 import { createWriteStream } from "node:fs";
-import { access, mkdir as mkdir3, readdir as readdir3, readFile as readFile7, rename, rm as rm3, stat as stat4, writeFile } from "node:fs/promises";
+import { access, mkdir as mkdir3, readdir as readdir4, readFile as readFile7, rename, rm as rm3, stat as stat4, writeFile } from "node:fs/promises";
 import { basename, join as join6 } from "node:path";
 import { setTimeout as delay2 } from "node:timers/promises";
 
@@ -37535,7 +37535,7 @@ var DshEngine = class {
 };
 
 // src/engines/pi.ts
-import { readFile as readFile5 } from "node:fs/promises";
+import { readdir as readdir3, readFile as readFile5 } from "node:fs/promises";
 import { join as join5 } from "node:path";
 
 // src/engines/pi-fold.ts
@@ -37834,6 +37834,14 @@ var PiEngine = class {
       return this.config.piModel?.trim() ? parseModel(this.config.piModel) : {};
     }
     return parseModel(profile);
+  }
+  async hasSession(sessionDir, sessionId) {
+    try {
+      const files = await readdir3(join5(sessionDir, "pi-sessions"));
+      return files.some((name) => name.endsWith(".jsonl") && name.includes(sessionId));
+    } catch {
+      return false;
+    }
   }
   async ensureReady() {
     if (this.version === "unavailable") {
@@ -38369,7 +38377,7 @@ var JobManager = class {
     const root = join6(this.config.stateDir, "jobs");
     let entries;
     try {
-      entries = await readdir3(root, { withFileTypes: true });
+      entries = await readdir4(root, { withFileTypes: true });
     } catch {
       return;
     }
@@ -38544,6 +38552,12 @@ var JobManager = class {
       worktree = original.worktree;
       sessionId = original.sessionId;
       sessionDir = original.sessionDir ?? original.dir;
+      if (engine.hasSession && !await engine.hasSession(sessionDir, sessionId)) {
+        throw new JobError(
+          "resume_unavailable",
+          `session ${sessionId} is missing from ${sessionDir}; it was deleted or pruned`
+        );
+      }
       resumeOf = original.id;
       groupId ??= original.groupId;
       groupName ??= original.groupName;
@@ -39101,6 +39115,15 @@ var JobManager = class {
   async delete(jobId, discardChanges) {
     const job = await this.requireJob(jobId);
     if (!job.terminal) throw new JobError("not_terminal", "cannot delete a non-terminal job");
+    const busy = [...this.jobs.values()].find(
+      (other) => other.id !== job.id && !other.terminal && other.sessionDir === job.sessionDir
+    );
+    if (busy) {
+      throw new JobError(
+        "session_busy",
+        `job ${busy.id} still uses session directory ${job.sessionDir}`
+      );
+    }
     try {
       const result = await deleteJobRecord(this.config.stateDir, jobId, {
         discardChanges,
