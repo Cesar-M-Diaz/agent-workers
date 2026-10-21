@@ -113,6 +113,7 @@ interface Job {
   changes?: WorktreeChanges;
   cleaned?: boolean;
   progressPersistScheduled?: boolean;
+  writeChain?: Promise<void>;
   eventsPath: string;
   finalPath: string;
   stderrPath: string;
@@ -1597,15 +1598,24 @@ export class JobManager {
    * Write job.json atomically: readers (the dashboard, the pane, a restarted
    * server) poll it while a job runs and must never see a half-written file.
    */
-  private async writeJob(job: Job): Promise<void> {
-    const tmpPath = `${job.jobPath}.${process.pid}.${++this.writeSeq}.tmp`;
-    try {
-      await writeFile(tmpPath, JSON.stringify(persisted(job), null, 2), { mode: 0o600 });
-      await rename(tmpPath, job.jobPath);
-    } catch (err) {
-      await rm(tmpPath, { force: true }).catch(() => undefined);
-      throw err;
-    }
+  /**
+   * Writes are chained per job and snapshot the job when their turn comes, so
+   * a slow progress write can never land after (and overwrite) the final one.
+   */
+  private writeJob(job: Job): Promise<void> {
+    const write = async (): Promise<void> => {
+      const tmpPath = `${job.jobPath}.${process.pid}.${++this.writeSeq}.tmp`;
+      try {
+        await writeFile(tmpPath, JSON.stringify(persisted(job), null, 2), { mode: 0o600 });
+        await rename(tmpPath, job.jobPath);
+      } catch (err) {
+        await rm(tmpPath, { force: true }).catch(() => undefined);
+        throw err;
+      }
+    };
+    const next = (job.writeChain ?? Promise.resolve()).then(write, write);
+    job.writeChain = next.catch(() => undefined);
+    return next;
   }
 
   private async eventsTail(path: string): Promise<string | undefined> {

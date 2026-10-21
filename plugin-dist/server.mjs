@@ -40089,15 +40089,24 @@ var JobManager = class {
    * Write job.json atomically: readers (the dashboard, the pane, a restarted
    * server) poll it while a job runs and must never see a half-written file.
    */
-  async writeJob(job) {
-    const tmpPath = `${job.jobPath}.${process.pid}.${++this.writeSeq}.tmp`;
-    try {
-      await writeFile2(tmpPath, JSON.stringify(persisted(job), null, 2), { mode: 384 });
-      await rename2(tmpPath, job.jobPath);
-    } catch (err) {
-      await rm4(tmpPath, { force: true }).catch(() => void 0);
-      throw err;
-    }
+  /**
+   * Writes are chained per job and snapshot the job when their turn comes, so
+   * a slow progress write can never land after (and overwrite) the final one.
+   */
+  writeJob(job) {
+    const write = async () => {
+      const tmpPath = `${job.jobPath}.${process.pid}.${++this.writeSeq}.tmp`;
+      try {
+        await writeFile2(tmpPath, JSON.stringify(persisted(job), null, 2), { mode: 384 });
+        await rename2(tmpPath, job.jobPath);
+      } catch (err) {
+        await rm4(tmpPath, { force: true }).catch(() => void 0);
+        throw err;
+      }
+    };
+    const next = (job.writeChain ?? Promise.resolve()).then(write, write);
+    job.writeChain = next.catch(() => void 0);
+    return next;
   }
   async eventsTail(path) {
     try {
