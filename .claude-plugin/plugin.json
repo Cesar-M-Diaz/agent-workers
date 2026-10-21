@@ -1,6 +1,6 @@
 {
   "name": "dsh-workers",
-  "version": "0.3.3",
+  "version": "0.3.4",
   "description": "Run DeepSeek Harness (dsh) headless workers in parallel, with a live dashboard, a cleanup-aware skill, slash commands, and a native pane.",
   "author": {
     "name": "Cesar-M-Diaz"
