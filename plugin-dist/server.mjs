@@ -7255,6 +7255,9 @@ var require_dist = __commonJS({
   }
 });
 
+// src/server.ts
+import { randomBytes } from "node:crypto";
+
 // node_modules/.pnpm/zod@4.6.5/node_modules/zod/v3/helpers/util.js
 var util;
 (function(util2) {
@@ -36743,6 +36746,7 @@ async function loadConfig() {
     stateDir,
     worktreeRoot,
     dshHome,
+    control: boolEnv("AGENT_WORKERS_CONTROL", true),
     maxConcurrent: intEnv("AGENT_WORKERS_MAX_CONCURRENT", 3, 1, 8),
     maxQueue: intEnv("AGENT_WORKERS_MAX_QUEUE", 16, 0, 64),
     defaultTimeoutMs: intEnv("AGENT_WORKERS_DEFAULT_TIMEOUT_S", 1200, 60, 3600) * 1e3,
@@ -36788,12 +36792,9 @@ async function resolveOpenCodeGoApiKey(config2) {
   return resolveCredential(config2, "OPENCODE_GO_API_KEY");
 }
 
-// src/jobs.ts
-import { randomUUID as randomUUID2 } from "node:crypto";
-import { createWriteStream } from "node:fs";
-import { access, mkdir as mkdir4, readdir as readdir5, readFile as readFile8, rename as rename2, rm as rm4, stat as stat4, writeFile as writeFile2 } from "node:fs/promises";
-import { basename, join as join7 } from "node:path";
-import { setTimeout as delay2 } from "node:timers/promises";
+// src/control/server.ts
+import { timingSafeEqual } from "node:crypto";
+import { createServer } from "node:http";
 
 // src/admin.ts
 import { readdir as readdir2, readFile as readFile4, rm as rm3 } from "node:fs/promises";
@@ -37405,10 +37406,6 @@ async function pruneExpiredJobs(stateDir, retentionDays, worktreeRoot = join4(st
   return result;
 }
 
-// src/engines/dsh.ts
-import { readdir as readdir3, readFile as readFile5 } from "node:fs/promises";
-import { join as join5 } from "node:path";
-
 // src/errors.ts
 var JobError = class extends Error {
   code;
@@ -37418,6 +37415,557 @@ var JobError = class extends Error {
     this.code = code;
   }
 };
+
+// src/control/protocol.ts
+var CONTROL_LIMITS = {
+  maxBodyBytes: 64 * 1024,
+  messageMin: 1,
+  messageMax: 2e4,
+  timeoutMinS: 60,
+  timeoutMaxS: 3600,
+  maxCharsMin: 1e3,
+  maxCharsMax: 5e4,
+  limitMin: 1,
+  limitMax: 500,
+  requestTimeoutMs: 35e3
+};
+var JOB_ID_PATTERN = /^[A-Za-z0-9_-]{1,80}$/;
+var INCLUDE_OPTIONS = [
+  "final",
+  "diff_stat",
+  "diff",
+  "stderr_tail",
+  "events_tail"
+];
+var ERROR_STATUS = {
+  invalid_request: 400,
+  invalid_job_id: 400,
+  invalid_cursor: 400,
+  invalid_include: 400,
+  unauthorized: 401,
+  forbidden_host: 403,
+  forbidden_origin: 403,
+  unknown_job: 404,
+  job_not_found: 404,
+  not_found: 404,
+  already_settled: 409,
+  not_terminal: 409,
+  job_active: 409,
+  worktree_dirty: 409,
+  worktree_busy: 409,
+  session_busy: 409,
+  not_owner: 409,
+  resume_unavailable: 409,
+  steer_timeout: 409,
+  write_conflict: 409,
+  pi_write_disabled: 409,
+  body_too_large: 413,
+  unsupported_media_type: 415,
+  not_ready: 503,
+  worker_unavailable: 503,
+  internal_error: 500
+};
+function httpStatusFor(code) {
+  return ERROR_STATUS[code] ?? 500;
+}
+var ControlError = class extends Error {
+  code;
+  details;
+  constructor(code, message, details = {}) {
+    super(message);
+    this.name = "ControlError";
+    this.code = code;
+    this.details = details;
+  }
+};
+
+// src/control/server.ts
+function tokenMatches(header, token) {
+  const prefix = "Bearer ";
+  if (header === void 0 || !header.startsWith(prefix)) return false;
+  const presented = Buffer.from(header.slice(prefix.length), "utf8");
+  const expected = Buffer.from(token, "utf8");
+  if (presented.length !== expected.length) return false;
+  return timingSafeEqual(presented, expected);
+}
+function sendJson(res, status, value) {
+  if (res.headersSent || res.writableEnded) return;
+  const body = JSON.stringify(value);
+  res.writeHead(status, {
+    "Content-Type": "application/json; charset=utf-8",
+    "Content-Length": Buffer.byteLength(body)
+  });
+  res.end(body);
+}
+function sendError(res, status, code, message, details = {}) {
+  sendJson(res, status, { error: code, message, ...details });
+}
+function sendFailure(res, err) {
+  if (res.headersSent || res.writableEnded) return;
+  const code = err instanceof ControlError || err instanceof JobError || err instanceof JobAdminError ? err.code : "internal_error";
+  const message = err instanceof Error ? err.message : "internal error";
+  const details = err instanceof ControlError || err instanceof JobAdminError ? err.details : {};
+  sendError(res, httpStatusFor(code), code, message, details);
+}
+function hasBody(req) {
+  const raw = req.headers["content-length"];
+  if (raw !== void 0) {
+    const length = Number(raw);
+    if (!Number.isInteger(length) || length < 0) {
+      throw new ControlError("invalid_request", "invalid content-length");
+    }
+    return length > 0;
+  }
+  return req.headers["transfer-encoding"] !== void 0;
+}
+function isJsonContentType(value) {
+  if (value === void 0) return false;
+  return value.split(";", 1)[0]?.trim().toLowerCase() === "application/json";
+}
+async function readJsonBody(req) {
+  if (!hasBody(req)) return void 0;
+  if (!isJsonContentType(req.headers["content-type"])) {
+    throw new ControlError(
+      "unsupported_media_type",
+      "requests with a body must use Content-Type: application/json"
+    );
+  }
+  const rawLength = req.headers["content-length"];
+  if (rawLength !== void 0 && Number(rawLength) > CONTROL_LIMITS.maxBodyBytes) {
+    req.resume();
+    throw new ControlError(
+      "body_too_large",
+      `request body exceeds ${CONTROL_LIMITS.maxBodyBytes} bytes`
+    );
+  }
+  const chunks = [];
+  let size = 0;
+  await new Promise((resolve4, reject) => {
+    const cleanup = () => {
+      req.off("data", onData);
+      req.off("end", onEnd);
+      req.off("error", onError);
+    };
+    const onData = (chunk) => {
+      size += chunk.length;
+      if (size > CONTROL_LIMITS.maxBodyBytes) {
+        cleanup();
+        req.resume();
+        reject(
+          new ControlError(
+            "body_too_large",
+            `request body exceeds ${CONTROL_LIMITS.maxBodyBytes} bytes`
+          )
+        );
+        return;
+      }
+      chunks.push(chunk);
+    };
+    const onEnd = () => {
+      cleanup();
+      resolve4();
+    };
+    const onError = (err) => {
+      cleanup();
+      reject(err);
+    };
+    req.on("data", onData);
+    req.once("end", onEnd);
+    req.once("error", onError);
+  });
+  if (chunks.length === 0) return {};
+  try {
+    return JSON.parse(Buffer.concat(chunks).toString("utf8"));
+  } catch {
+    throw new ControlError("invalid_request", "request body must be valid JSON");
+  }
+}
+function objectBody(value) {
+  if (value === void 0) return {};
+  if (value === null || typeof value !== "object" || Array.isArray(value)) {
+    throw new ControlError("invalid_request", "request body must be a JSON object");
+  }
+  return value;
+}
+function queryInt(url2, name, fallback, min, max, code) {
+  const raw = url2.searchParams.get(name);
+  if (raw === null) return fallback;
+  if (!/^\d+$/.test(raw)) {
+    throw new ControlError(code, `${name} must be an integer from ${min} to ${max}`);
+  }
+  const value = Number(raw);
+  if (!Number.isSafeInteger(value) || value < min || value > max) {
+    throw new ControlError(code, `${name} must be an integer from ${min} to ${max}`);
+  }
+  return value;
+}
+function parseInclude(url2) {
+  const raw = url2.searchParams.get("include");
+  if (raw === null) return ["final", "diff_stat"];
+  const allowed = new Set(INCLUDE_OPTIONS);
+  const include = [];
+  for (const value of raw.split(",").map((entry) => entry.trim())) {
+    if (!allowed.has(value)) {
+      throw new ControlError(
+        "invalid_include",
+        `include must be a comma-separated subset of ${INCLUDE_OPTIONS.join(", ")}`
+      );
+    }
+    if (!include.includes(value)) include.push(value);
+  }
+  return include;
+}
+function parseDiscardQuery(url2) {
+  const raw = url2.searchParams.get("discard_changes");
+  if (raw === null) return false;
+  if (raw === "1" || raw.toLowerCase() === "true") return true;
+  if (raw === "0" || raw.toLowerCase() === "false") return false;
+  throw new ControlError("invalid_request", "discard_changes must be 1 or 0");
+}
+function resolveRoute(method, pathname) {
+  if (method === "GET" && pathname === "/v1/health") return { kind: "health" };
+  if (method === "GET" && pathname === "/v1/jobs") return { kind: "jobs" };
+  const parts = pathname.split("/");
+  if (parts.length < 4 || parts[1] !== "v1" || parts[2] !== "jobs") return void 0;
+  const jobId = parts[3] ?? "";
+  if (parts.length === 4) {
+    if (method === "GET") return { kind: "job", jobId };
+    if (method === "DELETE") return { kind: "delete", jobId };
+    return void 0;
+  }
+  if (parts.length !== 5) return void 0;
+  const action = parts[4];
+  if (method === "GET" && action === "events") return { kind: "events", jobId };
+  if (method === "GET" && action === "result") return { kind: "result", jobId };
+  if (method === "POST" && action === "cancel") return { kind: "cancel", jobId };
+  if (method === "POST" && action === "steer") return { kind: "steer", jobId };
+  if (method === "POST" && action === "cleanup") return { kind: "cleanup", jobId };
+  return void 0;
+}
+async function handleRequest(req, res, service, token, port) {
+  if (!tokenMatches(req.headers.authorization, token)) {
+    sendError(res, 401, "unauthorized", "missing or invalid bearer token");
+    return;
+  }
+  const expectedHosts = [`127.0.0.1:${port}`, `localhost:${port}`];
+  const host = req.headers.host;
+  if (host === void 0 || !expectedHosts.includes(host)) {
+    sendError(res, 403, "forbidden_host", "request host is not allowed");
+    return;
+  }
+  const origin = req.headers.origin;
+  if (origin !== void 0 && origin !== `http://127.0.0.1:${port}` && origin !== `http://localhost:${port}`) {
+    sendError(res, 403, "forbidden_origin", "request origin is not allowed");
+    return;
+  }
+  let url2;
+  try {
+    url2 = new URL(req.url ?? "/", `http://127.0.0.1:${port}`);
+  } catch {
+    throw new ControlError("invalid_request", "invalid request url");
+  }
+  const method = (req.method ?? "GET").toUpperCase();
+  const route = resolveRoute(method, url2.pathname);
+  if (!route) {
+    sendError(res, 404, "not_found", "unknown route");
+    return;
+  }
+  if ("jobId" in route && !JOB_ID_PATTERN.test(route.jobId)) {
+    throw new ControlError("invalid_job_id", "invalid job id");
+  }
+  switch (route.kind) {
+    case "health":
+      sendJson(res, 200, await service.health());
+      return;
+    case "jobs":
+      sendJson(res, 200, await service.listJobs());
+      return;
+    case "job":
+      sendJson(res, 200, { job: await service.getJob(route.jobId) });
+      return;
+    case "events": {
+      const cursor = queryInt(url2, "cursor", 0, 0, Number.MAX_SAFE_INTEGER, "invalid_cursor");
+      const limit = queryInt(
+        url2,
+        "limit",
+        200,
+        CONTROL_LIMITS.limitMin,
+        CONTROL_LIMITS.limitMax,
+        "invalid_request"
+      );
+      sendJson(res, 200, await service.events(route.jobId, cursor, limit));
+      return;
+    }
+    case "result": {
+      const maxChars = queryInt(
+        url2,
+        "max_chars",
+        2e4,
+        CONTROL_LIMITS.maxCharsMin,
+        CONTROL_LIMITS.maxCharsMax,
+        "invalid_request"
+      );
+      const include = parseInclude(url2);
+      sendJson(res, 200, await service.result(route.jobId, maxChars, include));
+      return;
+    }
+    case "cancel": {
+      objectBody(await readJsonBody(req));
+      sendJson(res, 200, await service.cancel(route.jobId));
+      return;
+    }
+    case "steer": {
+      const body = objectBody(await readJsonBody(req));
+      if (typeof body.message !== "string" || body.message.length < CONTROL_LIMITS.messageMin || body.message.length > CONTROL_LIMITS.messageMax) {
+        throw new ControlError(
+          "invalid_request",
+          `message must be ${CONTROL_LIMITS.messageMin}..${CONTROL_LIMITS.messageMax} characters`
+        );
+      }
+      let timeoutS;
+      if (body.timeout_s !== void 0) {
+        const value = body.timeout_s;
+        if (typeof value !== "number" || !Number.isInteger(value) || value < CONTROL_LIMITS.timeoutMinS || value > CONTROL_LIMITS.timeoutMaxS) {
+          throw new ControlError(
+            "invalid_request",
+            `timeout_s must be an integer from ${CONTROL_LIMITS.timeoutMinS} to ${CONTROL_LIMITS.timeoutMaxS}`
+          );
+        }
+        timeoutS = value;
+      }
+      sendJson(res, 200, await service.steer(route.jobId, body.message, timeoutS));
+      return;
+    }
+    case "cleanup": {
+      const body = objectBody(await readJsonBody(req));
+      const discard = body.discard_changes;
+      if (discard !== void 0 && typeof discard !== "boolean") {
+        throw new ControlError("invalid_request", "discard_changes must be a boolean");
+      }
+      sendJson(res, 200, await service.cleanup(route.jobId, discard === true));
+      return;
+    }
+    case "delete": {
+      const discard = parseDiscardQuery(url2);
+      objectBody(await readJsonBody(req));
+      sendJson(res, 200, await service.delete(route.jobId, discard));
+      return;
+    }
+  }
+}
+async function startControlServer(options) {
+  let port = 0;
+  const server = createServer((req, res) => {
+    const timer = setTimeout(() => {
+      sendError(res, 500, "internal_error", "request timed out");
+    }, CONTROL_LIMITS.requestTimeoutMs);
+    timer.unref();
+    res.once("close", () => clearTimeout(timer));
+    void handleRequest(req, res, options.service, options.token, port).catch((err) => {
+      sendFailure(res, err);
+    });
+  });
+  server.requestTimeout = CONTROL_LIMITS.requestTimeoutMs;
+  server.headersTimeout = CONTROL_LIMITS.requestTimeoutMs;
+  await new Promise((resolve4, reject) => {
+    const onError = (err) => {
+      server.off("listening", onListening);
+      reject(err);
+    };
+    const onListening = () => {
+      server.off("error", onError);
+      resolve4();
+    };
+    server.once("error", onError);
+    server.once("listening", onListening);
+    server.listen(0, "127.0.0.1");
+  });
+  const address = server.address();
+  if (address === null || typeof address === "string") {
+    await closeServer(server);
+    throw new Error("control server did not bind a TCP port");
+  }
+  port = address.port;
+  const baseUrl = `http://127.0.0.1:${port}`;
+  return {
+    base_url: baseUrl,
+    port,
+    async close() {
+      await closeServer(server);
+    }
+  };
+}
+function closeServer(server) {
+  if (!server.listening) return Promise.resolve();
+  return new Promise((resolve4, reject) => {
+    server.close((err) => {
+      if (err) reject(err);
+      else resolve4();
+    });
+    server.closeAllConnections();
+  });
+}
+
+// src/version.ts
+var VERSION = "0.4.0";
+
+// src/control/service.ts
+function assertJobId(jobId) {
+  if (!JOB_ID_PATTERN.test(jobId)) {
+    throw new ControlError("invalid_job_id", "invalid job id");
+  }
+}
+function buildJobView(summary, facts) {
+  const active = isActiveStatus(summary.status);
+  const owned = facts.owned;
+  return {
+    job_id: summary.job_id,
+    label: summary.label ?? null,
+    status: summary.status,
+    reason: summary.reason ?? null,
+    backend: summary.backend,
+    owner_id: summary.owner_id,
+    owned,
+    group_id: summary.group_id,
+    group_name: summary.group_name,
+    profile: summary.profile,
+    provider: summary.provider ?? null,
+    model: summary.model ?? null,
+    access: summary.access,
+    isolation: summary.isolation,
+    cwd: summary.cwd,
+    worktree: summary.worktree ? {
+      path: summary.worktree.path,
+      branch: summary.worktree.branch,
+      base_commit: summary.worktree.base_commit,
+      repo_root: summary.worktree.repo_root,
+      cleaned: facts.cleaned
+    } : null,
+    created_at: summary.created_at,
+    started_at: summary.started_at ?? null,
+    finished_at: summary.finished_at ?? null,
+    elapsed_s: summary.elapsed_s ?? 0,
+    queue_position: summary.queue_position ?? null,
+    session_id: summary.session_id ?? null,
+    pid: summary.pid ?? null,
+    steps: summary.steps,
+    tool_calls: summary.tool_calls,
+    last_tool: summary.last_tool ?? null,
+    last_event_s_ago: summary.last_event_s_ago ?? null,
+    malformed_lines: summary.malformed_lines,
+    events_count: summary.events_count,
+    usage: summary.usage ?? null,
+    cost_usd: summary.cost_usd ?? null,
+    alerts: summary.alerts,
+    resume_of: summary.resume_of ?? null,
+    steered_from: summary.steered_from ?? null,
+    capabilities: {
+      cancel: owned && active,
+      steer: owned && summary.session_id !== void 0 && facts.supports_resume && (active || !facts.cleaned),
+      cleanup: owned && !active && summary.worktree !== void 0 && !facts.cleaned && !facts.worktree_busy,
+      delete: owned && !active && !facts.worktree_busy && !facts.session_busy,
+      read_result: true,
+      read_events: true
+    }
+  };
+}
+function healthFrom(manager, status) {
+  const server = status.server;
+  return {
+    ok: true,
+    protocol: CONTROL_PROTOCOL,
+    version: VERSION,
+    owner_id: manager.owner,
+    pid: process.pid,
+    ready: true,
+    state_dir: server.state_dir,
+    backend: server.backend,
+    max_concurrent: server.max_concurrent,
+    max_queue: server.max_queue,
+    running: server.running,
+    queued: server.queued
+  };
+}
+function createControlService(manager) {
+  async function factsFor(jobId) {
+    assertJobId(jobId);
+    const facts = await manager.controlFacts(jobId);
+    if (!facts) throw new ControlError("unknown_job", `unknown job ${jobId}`);
+    return facts;
+  }
+  async function requireOwned(jobId) {
+    const facts = await factsFor(jobId);
+    if (!facts.owned) {
+      throw new ControlError("not_owner", "job is owned by another manager", {
+        job_id: jobId
+      });
+    }
+    return facts;
+  }
+  async function getJob(jobId) {
+    assertJobId(jobId);
+    const status = await manager.statusOutput();
+    const summary = status.jobs.find((job) => job.job_id === jobId);
+    if (!summary) throw new ControlError("unknown_job", `unknown job ${jobId}`);
+    return buildJobView(summary, await factsFor(jobId));
+  }
+  async function listJobs() {
+    const status = await manager.statusOutput();
+    const jobs = [];
+    for (const summary of status.jobs) {
+      const facts = await manager.controlFacts(summary.job_id);
+      if (!facts) continue;
+      jobs.push(buildJobView(summary, facts));
+    }
+    return { server: healthFrom(manager, status), jobs };
+  }
+  return {
+    async health() {
+      return healthFrom(manager, await manager.statusOutput());
+    },
+    listJobs,
+    getJob,
+    async events(jobId, cursor, limit) {
+      await factsFor(jobId);
+      return manager.events(jobId, cursor, limit);
+    },
+    async result(jobId, maxChars, include) {
+      await factsFor(jobId);
+      return manager.result(jobId, maxChars, new Set(include));
+    },
+    async cancel(jobId) {
+      await requireOwned(jobId);
+      return manager.cancel(jobId);
+    },
+    async steer(jobId, message, timeoutS) {
+      await requireOwned(jobId);
+      return manager.steer({
+        job_id: jobId,
+        message,
+        ...timeoutS === void 0 ? {} : { timeout_s: timeoutS }
+      });
+    },
+    async cleanup(jobId, discardChanges) {
+      await requireOwned(jobId);
+      return manager.cleanup(jobId, discardChanges);
+    },
+    async delete(jobId, discardChanges) {
+      await requireOwned(jobId);
+      return manager.delete(jobId, discardChanges);
+    }
+  };
+}
+
+// src/jobs.ts
+import { randomUUID as randomUUID2 } from "node:crypto";
+import { createWriteStream } from "node:fs";
+import { access, mkdir as mkdir4, readdir as readdir5, readFile as readFile8, rename as rename2, rm as rm4, stat as stat4, writeFile as writeFile2 } from "node:fs/promises";
+import { basename, join as join7 } from "node:path";
+import { setTimeout as delay2 } from "node:timers/promises";
+
+// src/engines/dsh.ts
+import { readdir as readdir3, readFile as readFile5 } from "node:fs/promises";
+import { join as join5 } from "node:path";
 
 // src/ndjson.ts
 import { StringDecoder } from "node:string_decoder";
@@ -38188,9 +38736,6 @@ function estimateCostUsd(provider, model, usage) {
   const cacheWrite = usage.cacheWriteTokens ?? 0;
   return (input2 * rates.input + output2 * rates.output + cacheRead * rates.cacheRead + cacheWrite * rates.cacheWrite) / 1e6;
 }
-
-// src/version.ts
-var VERSION = "0.4.0";
 
 // src/watchdog.ts
 function formatAge(milliseconds) {
@@ -39474,10 +40019,12 @@ var JobManager = class {
         path: job.worktree.path,
         branch: job.worktree.branch,
         base_commit: job.worktree.baseCommit,
-        cleaned: job.cleaned === true
+        repo_root: job.worktree.repoRoot,
+        cleaned: job.cleaned === true || job.worktree.cleaned === true
       } : void 0,
       created_at: job.createdAt,
       started_at: job.startedAt,
+      finished_at: job.finishedAt,
       elapsed_s: Math.max(0, Math.round(elapsedMs / 1e3)),
       queue_position: job.status === "queued" ? this.queue.indexOf(job) + 1 : void 0,
       session_id: job.sessionId ?? fold.sessionId,
@@ -39487,9 +40034,12 @@ var JobManager = class {
       last_tool: fold.lastTool,
       last_event_s_ago: fold.lastEventAt ? Math.max(0, Math.round((Date.now() - fold.lastEventAt) / 1e3)) : void 0,
       malformed_lines: fold.malformedLines,
+      events_count: fold.eventsCount,
       usage: fold.usage,
       cost_usd: costOf(job),
-      alerts: job.alerts
+      alerts: job.alerts,
+      resume_of: job.resumeOf,
+      steered_from: job.steeredFrom
     };
   }
   selectJobs(ids) {
@@ -39582,6 +40132,27 @@ async function main() {
   const config2 = await loadConfig();
   const manager = new JobManager(config2);
   await manager.init();
+  let controlServer;
+  if (config2.control) {
+    try {
+      const token = randomBytes(32).toString("base64url");
+      controlServer = await startControlServer({
+        service: createControlService(manager),
+        token
+      });
+      await manager.publishControl({
+        base_url: controlServer.base_url,
+        port: controlServer.port,
+        token
+      });
+    } catch (err) {
+      stderr("control_unavailable", {
+        message: err instanceof Error ? err.message : String(err)
+      });
+      await controlServer?.close().catch(() => void 0);
+      controlServer = void 0;
+    }
+  }
   const server = new McpServer(
     { name: "agent-workers", version: VERSION },
     {
@@ -39785,6 +40356,13 @@ async function main() {
   const shutdown = async (code) => {
     if (stopping) return;
     stopping = true;
+    try {
+      await controlServer?.close();
+    } catch (err) {
+      stderr("control_shutdown_error", {
+        message: err instanceof Error ? err.message : String(err)
+      });
+    }
     try {
       await manager.shutdown();
     } catch (err) {

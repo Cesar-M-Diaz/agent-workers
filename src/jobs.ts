@@ -1517,11 +1517,13 @@ export class JobManager {
             path: job.worktree.path,
             branch: job.worktree.branch,
             base_commit: job.worktree.baseCommit,
-            cleaned: job.cleaned === true,
+            repo_root: job.worktree.repoRoot,
+            cleaned: job.cleaned === true || job.worktree.cleaned === true,
           }
         : undefined,
       created_at: job.createdAt,
       started_at: job.startedAt,
+      finished_at: job.finishedAt,
       elapsed_s: Math.max(0, Math.round(elapsedMs / 1000)),
       queue_position: job.status === 'queued' ? this.queue.indexOf(job) + 1 : undefined,
       session_id: job.sessionId ?? fold.sessionId,
@@ -1533,9 +1535,12 @@ export class JobManager {
         ? Math.max(0, Math.round((Date.now() - fold.lastEventAt) / 1000))
         : undefined,
       malformed_lines: fold.malformedLines,
+      events_count: fold.eventsCount,
       usage: fold.usage,
       cost_usd: costOf(job),
       alerts: job.alerts,
+      resume_of: job.resumeOf,
+      steered_from: job.steeredFrom,
     };
   }
 

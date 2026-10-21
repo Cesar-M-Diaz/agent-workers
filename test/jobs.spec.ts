@@ -93,6 +93,7 @@ describe('JobManager', () => {
       stateDir: join(root, 'state'),
       worktreeRoot: join(root, 'worktrees'),
       dshHome: join(root, 'dsh-home'),
+      control: true,
       maxConcurrent: 1,
       maxQueue: 4,
       defaultTimeoutMs: 60_000,

@@ -2,8 +2,10 @@ import { type ChildProcessWithoutNullStreams, spawn } from 'node:child_process';
 import { chmod, mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { setTimeout as delay } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { type OwnerDescriptor, readDescriptors } from '../src/control/descriptor.js';
 
 const serverPath = fileURLToPath(new URL('../dist/server.js', import.meta.url));
 
@@ -29,6 +31,7 @@ interface RpcResponse {
 }
 
 class RpcClient {
+  readonly lines: string[] = [];
   private nextId = 1;
   private buffer = '';
   private readonly pending = new Map<
@@ -48,6 +51,7 @@ class RpcClient {
       const line = this.buffer.slice(0, newline).trim();
       this.buffer = this.buffer.slice(newline + 1);
       if (line) {
+        this.lines.push(line);
         const message = JSON.parse(line) as RpcResponse;
         if (message.id !== undefined) {
           const pending = this.pending.get(message.id);
@@ -84,6 +88,19 @@ function toolPayload(response: RpcResponse): Record<string, unknown> {
   if (typeof text !== 'string')
     throw new Error(`missing MCP tool content: ${JSON.stringify(response)}`);
   return JSON.parse(text) as Record<string, unknown>;
+}
+
+async function waitForDescriptor(
+  stateDir: string,
+  predicate: (descriptor: OwnerDescriptor) => boolean = () => true,
+): Promise<OwnerDescriptor> {
+  const deadline = Date.now() + 10_000;
+  while (Date.now() < deadline) {
+    const descriptor = (await readDescriptors(stateDir)).find(predicate);
+    if (descriptor) return descriptor;
+    await delay(50);
+  }
+  throw new Error(`timed out waiting for an owner descriptor in ${stateDir}`);
 }
 
 describe('MCP server', () => {
@@ -139,6 +156,24 @@ describe('MCP server', () => {
     });
     expect(init.error).toBeUndefined();
     rpc.notify('notifications/initialized', {});
+
+    const descriptor = await waitForDescriptor(
+      join(root, 'state'),
+      (candidate) => candidate.control !== null,
+    );
+    expect(descriptor.control?.base_url).toMatch(/^http:\/\/127\.0\.0\.1:\d+$/);
+    expect(descriptor.control?.port).toBeTruthy();
+    expect(descriptor.control?.token).toBeTruthy();
+    const healthResponse = await fetch(`${descriptor.control?.base_url}/v1/health`, {
+      headers: { authorization: `Bearer ${descriptor.control?.token}` },
+    });
+    expect(healthResponse.status).toBe(200);
+    const health = (await healthResponse.json()) as {
+      ok: boolean;
+      ready: boolean;
+      owner_id: string;
+    };
+    expect(health).toMatchObject({ ok: true, ready: true, owner_id: descriptor.owner_id });
 
     const tools = await rpc.request('tools/list', {});
     const listed = (tools.result?.tools ?? []) as Array<{
@@ -236,5 +271,55 @@ describe('MCP server', () => {
       arguments: { job_id: startPayload.job_id },
     });
     expect(toolPayload(deleted)).toMatchObject({ job_id: startPayload.job_id, deleted: true });
+
+    expect(rpc.lines.length).toBeGreaterThan(0);
+    for (const line of rpc.lines) {
+      expect(JSON.parse(line)).toMatchObject({ jsonrpc: '2.0' });
+    }
+  });
+
+  it('leaves control null when AGENT_WORKERS_CONTROL=0', async () => {
+    const stateDir = join(root, 'state-off');
+    const off = spawn(process.execPath, [serverPath], {
+      cwd: join(root, 'repo'),
+      env: {
+        PATH: process.env.PATH,
+        HOME: process.env.HOME,
+        AGENT_WORKERS_DSH_BIN: join(root, 'fake-dsh.mjs'),
+        AGENT_WORKERS_ALLOWED_ROOTS: join(root, 'repo'),
+        AGENT_WORKERS_STATE_DIR: stateDir,
+        AGENT_WORKERS_WORKTREE_ROOT: join(root, 'worktrees-off'),
+        AGENT_WORKERS_DSH_HOME: join(root, 'dsh-home'),
+        AGENT_WORKERS_MAX_CONCURRENT: '1',
+        AGENT_WORKERS_MAX_QUEUE: '2',
+        AGENT_WORKERS_MAX_DEPTH: '2',
+        AGENT_WORKERS_USE_DSH_CREDENTIALS: '0',
+        AGENT_WORKERS_CONTROL: '0',
+      },
+      stdio: ['pipe', 'pipe', 'pipe'],
+    });
+    const offRpc = new RpcClient(off);
+    try {
+      const init = await offRpc.request('initialize', {
+        protocolVersion: '2025-06-18',
+        capabilities: {},
+        clientInfo: { name: 'test', version: '1.0.0' },
+      });
+      expect(init.error).toBeUndefined();
+      const descriptor = await waitForDescriptor(stateDir);
+      expect(descriptor.control).toBeNull();
+      expect(descriptor.ready).toBe(true);
+      expect(offRpc.lines.length).toBeGreaterThan(0);
+      for (const line of offRpc.lines) {
+        expect(JSON.parse(line)).toMatchObject({ jsonrpc: '2.0' });
+      }
+    } finally {
+      off.kill('SIGTERM');
+      await new Promise<void>((resolve) => {
+        if (off.exitCode !== null) return resolve();
+        off.once('exit', () => resolve());
+        setTimeout(resolve, 3000);
+      });
+    }
   });
 });

@@ -1,9 +1,13 @@
 #!/usr/bin/env node
+import { randomBytes } from 'node:crypto';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
 import { z } from 'zod';
 import { loadConfig } from './config.js';
+import type { ControlServer } from './control/server.js';
+import { startControlServer } from './control/server.js';
+import { createControlService } from './control/service.js';
 import { JobError, JobManager } from './jobs.js';
 import { VERSION } from './version.js';
 
@@ -44,6 +48,28 @@ async function main(): Promise<void> {
   const config = await loadConfig();
   const manager = new JobManager(config);
   await manager.init();
+
+  let controlServer: ControlServer | undefined;
+  if (config.control) {
+    try {
+      const token = randomBytes(32).toString('base64url');
+      controlServer = await startControlServer({
+        service: createControlService(manager),
+        token,
+      });
+      await manager.publishControl({
+        base_url: controlServer.base_url,
+        port: controlServer.port,
+        token,
+      });
+    } catch (err) {
+      stderr('control_unavailable', {
+        message: err instanceof Error ? err.message : String(err),
+      });
+      await controlServer?.close().catch(() => undefined);
+      controlServer = undefined;
+    }
+  }
 
   const server = new McpServer(
     { name: 'agent-workers', version: VERSION },
@@ -374,6 +400,13 @@ async function main(): Promise<void> {
   const shutdown = async (code: number): Promise<void> => {
     if (stopping) return;
     stopping = true;
+    try {
+      await controlServer?.close();
+    } catch (err) {
+      stderr('control_shutdown_error', {
+        message: err instanceof Error ? err.message : String(err),
+      });
+    }
     try {
       await manager.shutdown();
     } catch (err) {

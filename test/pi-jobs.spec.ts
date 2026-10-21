@@ -31,6 +31,7 @@ describe('JobManager pi backend', () => {
       stateDir: join(root, 'state'),
       worktreeRoot: join(root, 'worktrees'),
       dshHome: join(root, 'dsh-home'),
+      control: true,
       maxConcurrent: 1,
       maxQueue: 2,
       defaultTimeoutMs: 60_000,

@@ -57,8 +57,10 @@ describe('watchdog configuration', () => {
     'AGENT_WORKERS_ALLOWED_ROOTS',
     'AGENT_WORKERS_MAX_CONCURRENT',
     'AGENT_WORKERS_BACKEND',
+    'AGENT_WORKERS_CONTROL',
     'DSH_WORKERS_MAX_CONCURRENT',
     'DSH_WORKERS_BACKEND',
+    'DSH_WORKERS_CONTROL',
     'XDG_STATE_HOME',
   ] as const;
   let watchdogSaved: Record<string, string | undefined> = {};
@@ -93,6 +95,22 @@ describe('watchdog configuration', () => {
     expect(config.maxSteps).toBeUndefined();
     expect(config.maxCostUsd).toBeUndefined();
     expect(config.watchdogAction).toBe('warn');
+  });
+
+  it('enables the control API by default and accepts explicit off values', async () => {
+    let config = await loadConfig();
+    expect(config.control).toBe(true);
+
+    for (const value of ['0', 'false', 'no', 'off']) {
+      process.env.AGENT_WORKERS_CONTROL = value;
+      config = await loadConfig();
+      expect(config.control).toBe(false);
+    }
+
+    delete process.env.AGENT_WORKERS_CONTROL;
+    process.env.DSH_WORKERS_CONTROL = 'off';
+    config = await loadConfig();
+    expect(config.control).toBe(false);
   });
 
   it('treats blank plugin paths as unset', async () => {

@@ -255,6 +255,7 @@ describe('owner leases and busy guards', () => {
       stateDir,
       worktreeRoot,
       dshHome,
+      control: true,
       maxConcurrent: 2,
       maxQueue: 8,
       defaultTimeoutMs: 60_000,

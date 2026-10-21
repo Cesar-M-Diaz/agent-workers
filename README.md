@@ -617,6 +617,21 @@ home, but the fallback state is temporary.
 - `worker_cleanup`: remove a finished worktree and branch.
 - `worker_delete`: delete a terminal job record, logs, and its clean worktree; refuses while another active job shares its session directory.
 
+## Control API
+
+While the MCP server runs it also exposes a loopback-only HTTP control API for
+local clients such as the dsh-tui panel. It binds `127.0.0.1` on an ephemeral
+port, and every request needs the bearer token published in the owner
+descriptor `<state>/control/<ownerId>.json` (mode 0600, directory 0700). The
+descriptor also carries the `base_url` and `port`. The API is a thin adapter
+over the same job manager as the MCP tools: health and job capabilities,
+events, results, cancel, steer, cleanup, and delete. It never exposes the task,
+the worker environment, API keys, or the token.
+
+Set `AGENT_WORKERS_CONTROL=0` (`false`, `no`, or `off` also work) to disable it.
+The owner lease is still written, with `control: null`. See
+[docs/control-protocol.md](docs/control-protocol.md) for the full contract.
+
 ## Watchdogs
 
 The server folds each worker's NDJSON events and recomputes alerts on every
