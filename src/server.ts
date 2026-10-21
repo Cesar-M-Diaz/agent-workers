@@ -76,13 +76,19 @@ async function main(): Promise<void> {
           .max(80)
           .optional()
           .describe('Short label for status output.'),
+        backend: z
+          .enum(['dsh', 'pi'])
+          .optional()
+          .describe('Backend for this job. Defaults to the server backend (DSH_WORKERS_BACKEND).'),
         profile: z
           .string()
           .trim()
           .min(1)
           .max(80)
           .optional()
-          .describe('DSH profile for this job. Defaults to the profile selected with dsh_profile.'),
+          .describe(
+            'Backend profile for this job: a dsh profile name, a pi model pattern, or a named pi profile. Defaults to the active profile.',
+          ),
         group_id: z
           .string()
           .trim()

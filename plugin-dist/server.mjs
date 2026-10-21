@@ -36713,8 +36713,18 @@ async function loadConfig() {
     "DEEPSEEK_BASE_URL",
     ...splitList(process.env.DSH_WORKERS_ENV_ALLOW)
   ];
+  const piAgentDir = pathEnv("DSH_WORKERS_PI_AGENT_DIR");
   return {
+    backend: enumEnv("DSH_WORKERS_BACKEND", "dsh", ["dsh", "pi"]),
     dshBin: process.env.DSH_WORKERS_DSH_BIN ? resolve2(expandHome(process.env.DSH_WORKERS_DSH_BIN)) : "dsh",
+    piBin: process.env.DSH_WORKERS_PI_BIN ? resolve2(expandHome(process.env.DSH_WORKERS_PI_BIN)) : "pi",
+    piDefaultProfile: process.env.DSH_WORKERS_PI_PROFILE?.trim() || "default",
+    piProfilesFile: resolve2(
+      expandHome(process.env.DSH_WORKERS_PI_PROFILES_FILE ?? join(stateDir, "pi-profiles.json"))
+    ),
+    piModel: process.env.DSH_WORKERS_PI_MODEL?.trim() || "",
+    piThinking: process.env.DSH_WORKERS_PI_THINKING?.trim() || "",
+    piAgentDir: piAgentDir ? resolve2(expandHome(piAgentDir)) : "",
     allowedRoots,
     stateDir,
     worktreeRoot,
@@ -36767,8 +36777,8 @@ async function resolveOpenCodeGoApiKey(config2) {
 // src/jobs.ts
 import { randomUUID } from "node:crypto";
 import { createWriteStream } from "node:fs";
-import { access, mkdir as mkdir3, readdir as readdir2, readFile as readFile5, rename, rm as rm3, stat as stat4, writeFile } from "node:fs/promises";
-import { basename, join as join4 } from "node:path";
+import { access, mkdir as mkdir3, readdir as readdir3, readFile as readFile7, rename, rm as rm3, stat as stat4, writeFile } from "node:fs/promises";
+import { basename, join as join6 } from "node:path";
 import { setTimeout as delay2 } from "node:timers/promises";
 
 // src/admin.ts
@@ -37233,76 +37243,19 @@ async function pruneExpiredJobs(stateDir, retentionDays, worktreeRoot = join3(st
   return result;
 }
 
-// src/events.ts
-import { readFile as readFile4 } from "node:fs/promises";
-var DEFAULT_LIMIT = 200;
-var MAX_LIMIT = 500;
-var MAX_RETURNED_EVENT_CHARS = 12e3;
-var MAX_PREVIEW_CHARS = 8e3;
-function clampLimit(value) {
-  if (value === void 0 || !Number.isFinite(value)) return DEFAULT_LIMIT;
-  return Math.max(1, Math.min(MAX_LIMIT, Math.trunc(value)));
-}
-function parseEvent(line, cursor) {
-  const bytes = Buffer.byteLength(line, "utf8");
-  let parsed;
-  try {
-    parsed = JSON.parse(line);
-  } catch {
-    return {
-      cursor,
-      type: "malformed",
-      bytes,
-      preview: line.slice(0, MAX_PREVIEW_CHARS),
-      parse_error: "invalid_json"
-    };
+// src/engines/dsh.ts
+import { readdir as readdir2, readFile as readFile4 } from "node:fs/promises";
+import { join as join4 } from "node:path";
+
+// src/errors.ts
+var JobError = class extends Error {
+  code;
+  constructor(code, message) {
+    super(message);
+    this.name = "JobError";
+    this.code = code;
   }
-  if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
-    return {
-      cursor,
-      type: "malformed",
-      bytes,
-      preview: line.slice(0, MAX_PREVIEW_CHARS),
-      parse_error: "not_an_object"
-    };
-  }
-  const event = parsed;
-  const type = typeof event.type === "string" ? event.type : "unknown";
-  const serialized = JSON.stringify(event);
-  if (serialized.length > MAX_RETURNED_EVENT_CHARS) {
-    return {
-      cursor,
-      type,
-      bytes,
-      truncated: true,
-      preview: serialized.slice(0, MAX_PREVIEW_CHARS)
-    };
-  }
-  return { cursor, type, bytes, event };
-}
-async function readEventPage(eventsPath, cursor = 0, limit) {
-  let text;
-  try {
-    text = await readFile4(eventsPath, "utf8");
-  } catch (err) {
-    if (err.code === "ENOENT") {
-      return { events: [], next_cursor: 0, total_events: 0, has_more: false };
-    }
-    throw err;
-  }
-  const lines = text.split("\n").filter((line) => line.length > 0);
-  const totalEvents = lines.length;
-  const start = Math.max(0, Math.min(totalEvents, Math.trunc(cursor)));
-  const count = clampLimit(limit);
-  const events = lines.slice(start, start + count).map((line, index) => parseEvent(line, start + index));
-  const nextCursor = start + events.length;
-  return {
-    events,
-    next_cursor: nextCursor,
-    total_events: totalEvents,
-    has_more: nextCursor < totalEvents
-  };
-}
+};
 
 // src/ndjson.ts
 import { StringDecoder } from "node:string_decoder";
@@ -37325,13 +37278,13 @@ function stableStringify(value) {
 function addUsage(current, next) {
   if (next === null || typeof next !== "object") return current;
   const value = next;
-  const num = (key) => typeof value[key] === "number" && Number.isFinite(value[key]) ? value[key] : void 0;
-  const inputTokens = num("inputTokens");
-  const outputTokens = num("outputTokens");
-  const totalTokens = num("totalTokens");
-  const cacheReadTokens = num("cacheReadTokens");
-  const cacheWriteTokens = num("cacheWriteTokens");
-  const reasoningTokens = num("reasoningTokens");
+  const num2 = (key) => typeof value[key] === "number" && Number.isFinite(value[key]) ? value[key] : void 0;
+  const inputTokens = num2("inputTokens");
+  const outputTokens = num2("outputTokens");
+  const totalTokens = num2("totalTokens");
+  const cacheReadTokens = num2("cacheReadTokens");
+  const cacheWriteTokens = num2("cacheWriteTokens");
+  const reasoningTokens = num2("reasoningTokens");
   if (inputTokens === void 0 && outputTokens === void 0 && totalTokens === void 0 && cacheReadTokens === void 0 && cacheWriteTokens === void 0 && reasoningTokens === void 0) {
     return current;
   }
@@ -37458,6 +37411,539 @@ var NdjsonFold = class {
     }
   }
 };
+
+// src/engines/dsh.ts
+var DshEngine = class {
+  constructor(config2, baseEnv) {
+    this.config = config2;
+    this.baseEnv = baseEnv;
+  }
+  config;
+  baseEnv;
+  id = "dsh";
+  label = "DeepSeek Harness";
+  defaultProfile = "work-openrouter";
+  supportsResume = true;
+  version = "unavailable";
+  apiKey;
+  openRouterChatApiKey;
+  openCodeGoApiKey;
+  profileReady = /* @__PURE__ */ new Map();
+  async init() {
+    this.apiKey = await resolveApiKey(this.config);
+    this.openRouterChatApiKey = await resolveOpenRouterChatApiKey(this.config);
+    this.openCodeGoApiKey = await resolveOpenCodeGoApiKey(this.config);
+    const result = await runCapture(this.config.dshBin, ["--version"], { timeoutMs: 1e4 });
+    this.version = result.code === 0 ? result.stdout.trim() : "unavailable";
+    return { version: this.version };
+  }
+  async availableProfiles() {
+    try {
+      const entries = await readdir2(join4(this.config.dshHome, "profiles"), {
+        withFileTypes: true
+      });
+      return entries.filter((entry) => entry.isDirectory()).map((entry) => entry.name).sort();
+    } catch {
+      return [];
+    }
+  }
+  async resolveProfile(name) {
+    const profile = name.trim();
+    if (!/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(profile)) {
+      throw new JobError("unknown_profile", `invalid profile name: ${profile}`);
+    }
+    const profiles = await this.availableProfiles();
+    if (!profiles.includes(profile)) {
+      throw new JobError(
+        "unknown_profile",
+        `unknown profile ${profile}; available: ${profiles.join(", ") || "none"}`
+      );
+    }
+    return profile;
+  }
+  async readProfileMetadata(profile) {
+    try {
+      const raw = JSON.parse(
+        await readFile4(join4(this.config.dshHome, "profiles", profile, "metadata.json"), "utf8")
+      );
+      return {
+        ...typeof raw.provider === "string" && raw.provider.trim() ? { provider: raw.provider.trim() } : {},
+        ...typeof raw.model === "string" && raw.model.trim() ? { model: raw.model.trim() } : {}
+      };
+    } catch {
+      return {};
+    }
+  }
+  async ensureReady(profile) {
+    let ready = this.profileReady.get(profile);
+    if (!ready) {
+      ready = (async () => {
+        const result = await runCapture(this.config.dshBin, ["--profile", profile, "--help"], {
+          cwd: this.config.allowedRoots[0],
+          env: this.envFor(1, "read-only"),
+          timeoutMs: 3e4
+        });
+        if (result.code !== 0) {
+          throw new JobError(
+            "dsh_unavailable",
+            `cannot initialize dsh profile ${profile}: ${result.stderr.trim()}`
+          );
+        }
+      })();
+      this.profileReady.set(profile, ready);
+      void ready.catch(() => this.profileReady.delete(profile));
+    }
+    return ready;
+  }
+  async launch(spec, _task) {
+    const args = ["--profile", spec.profile, "--json"];
+    if (spec.sessionId) args.push("--session-id", spec.sessionId);
+    return {
+      command: this.config.dshBin,
+      args,
+      env: this.envFor(spec.depth, spec.access),
+      taskInput: "stdin"
+    };
+  }
+  createFold(onEvent) {
+    return new NdjsonFold(onEvent);
+  }
+  envFor(depth, access2) {
+    const env = this.baseEnv(depth);
+    env.DSH_HOME = this.config.dshHome;
+    env.DSH_PERMISSION_MODE = access2 === "workspace-write" ? "workspace-write" : "read-only";
+    env.DSH_TELEMETRY_DISABLED = "1";
+    if (this.apiKey) env.DEEPSEEK_API_KEY = this.apiKey;
+    if (this.openRouterChatApiKey) env.OPENROUTER_CHAT_API_KEY = this.openRouterChatApiKey;
+    if (this.openCodeGoApiKey) env.OPENCODE_GO_API_KEY = this.openCodeGoApiKey;
+    return env;
+  }
+};
+
+// src/engines/pi.ts
+import { readFile as readFile5 } from "node:fs/promises";
+import { join as join5 } from "node:path";
+
+// src/engines/pi-fold.ts
+import { StringDecoder as StringDecoder2 } from "node:string_decoder";
+var MAX_LINE_BYTES2 = 16 * 1024 * 1024;
+var TOOL_WINDOW = 10;
+var RESULT_WINDOW = 10;
+function num(value) {
+  return typeof value === "number" && Number.isFinite(value) ? value : void 0;
+}
+function addUsage2(current, next) {
+  const base = current ?? {};
+  return {
+    inputTokens: (base.inputTokens ?? 0) + (next.inputTokens ?? 0),
+    outputTokens: (base.outputTokens ?? 0) + (next.outputTokens ?? 0),
+    totalTokens: (base.totalTokens ?? 0) + (next.totalTokens ?? 0),
+    cacheReadTokens: (base.cacheReadTokens ?? 0) + (next.cacheReadTokens ?? 0),
+    cacheWriteTokens: (base.cacheWriteTokens ?? 0) + (next.cacheWriteTokens ?? 0),
+    reasoningTokens: (base.reasoningTokens ?? 0) + (next.reasoningTokens ?? 0)
+  };
+}
+function mapUsage(raw) {
+  if (raw === null || typeof raw !== "object") return void 0;
+  const value = raw;
+  const usage = {
+    ...num(value.input) !== void 0 ? { inputTokens: num(value.input) } : {},
+    ...num(value.output) !== void 0 ? { outputTokens: num(value.output) } : {},
+    ...num(value.totalTokens) !== void 0 ? { totalTokens: num(value.totalTokens) } : {},
+    ...num(value.cacheRead) !== void 0 ? { cacheReadTokens: num(value.cacheRead) } : {},
+    ...num(value.cacheWrite) !== void 0 ? { cacheWriteTokens: num(value.cacheWrite) } : {},
+    ...num(value.reasoning) !== void 0 ? { reasoningTokens: num(value.reasoning) } : {}
+  };
+  if (Object.keys(usage).length === 0) return void 0;
+  const cost = value.cost;
+  const total = cost !== null && typeof cost === "object" ? num(cost.total) : void 0;
+  return { usage, ...total !== void 0 ? { costUsd: total } : {} };
+}
+function textBlocks(content) {
+  if (!Array.isArray(content)) return "";
+  return content.filter(
+    (block) => block !== null && typeof block === "object" && block.type === "text"
+  ).map((block) => block.text).filter((text) => typeof text === "string").join("");
+}
+function mapStopReason(reason) {
+  switch (reason) {
+    case "stop":
+      return "completed";
+    case "length":
+      return "length";
+    case "error":
+      return "error";
+    case "aborted":
+      return "aborted";
+    default:
+      return void 0;
+  }
+}
+var PiFold = class {
+  constructor(onEvent) {
+    this.onEvent = onEvent;
+  }
+  onEvent;
+  state = {
+    malformedLines: 0,
+    eventsCount: 0,
+    toolCalls: 0,
+    steps: 0,
+    recentToolCalls: [],
+    recentToolResults: []
+  };
+  decoder = new StringDecoder2("utf8");
+  buffer = "";
+  lastAssistantText = "";
+  push(chunk) {
+    this.buffer += this.decoder.write(chunk);
+    this.drain(false);
+  }
+  end() {
+    this.buffer += this.decoder.end();
+    this.drain(true);
+    return this.state;
+  }
+  emit(event) {
+    this.onEvent?.(JSON.stringify(event));
+  }
+  drain(atEnd) {
+    let newline = this.buffer.indexOf("\n");
+    while (newline >= 0) {
+      const line = this.buffer.slice(0, newline);
+      this.buffer = this.buffer.slice(newline + 1);
+      this.consume(line);
+      newline = this.buffer.indexOf("\n");
+    }
+    if (atEnd && this.buffer.length > 0) {
+      const line = this.buffer;
+      this.buffer = "";
+      this.consume(line);
+    }
+  }
+  consume(line) {
+    if (line.trim() === "") return;
+    if (Buffer.byteLength(line, "utf8") > MAX_LINE_BYTES2) {
+      this.state.malformedLines += 1;
+      return;
+    }
+    let event;
+    try {
+      event = JSON.parse(line);
+    } catch {
+      this.state.malformedLines += 1;
+      return;
+    }
+    if (event === null || typeof event !== "object" || Array.isArray(event)) {
+      this.state.malformedLines += 1;
+      return;
+    }
+    this.fold(event);
+  }
+  fold(event) {
+    this.state.eventsCount += 1;
+    this.state.lastEventAt = Date.now();
+    const type = typeof event.type === "string" ? event.type : "";
+    switch (type) {
+      case "session":
+        if (typeof event.id === "string") {
+          this.state.sessionId = event.id;
+          this.emit({ type: "session", sessionId: event.id });
+        }
+        return;
+      case "turn_start":
+        this.state.steps += 1;
+        this.emit({ type: "status", phase: "step_start" });
+        return;
+      case "message_update": {
+        const update = event.assistantMessageEvent;
+        if (update && update.type === "text_end" && typeof update.content === "string") {
+          this.emit({ type: "text", text: update.content });
+        }
+        return;
+      }
+      case "message_end": {
+        const message = event.message;
+        if (message?.role !== "assistant") return;
+        const text = textBlocks(message.content);
+        if (text) this.lastAssistantText = text;
+        if (message.stopReason === "error") {
+          const error62 = text || "pi turn ended with error";
+          this.state.errorMessage = error62;
+          this.emit({ type: "error", message: error62 });
+        }
+        return;
+      }
+      case "tool_execution_start": {
+        const tool = typeof event.toolName === "string" ? event.toolName : "tool";
+        this.state.toolCalls += 1;
+        this.state.lastTool = tool;
+        this.state.recentToolCalls.push({ tool, input: stableStringify(event.args) });
+        if (this.state.recentToolCalls.length > TOOL_WINDOW) this.state.recentToolCalls.shift();
+        this.emit({
+          type: "tool_call",
+          callId: event.toolCallId,
+          tool,
+          input: event.args
+        });
+        return;
+      }
+      case "tool_execution_end": {
+        const status = event.isError === true ? "failed" : "completed";
+        this.state.recentToolResults.push(status);
+        if (this.state.recentToolResults.length > RESULT_WINDOW)
+          this.state.recentToolResults.shift();
+        this.emit({ type: "tool_result", callId: event.toolCallId, status });
+        return;
+      }
+      case "turn_end": {
+        const message = event.message;
+        const mapped = mapUsage(message?.usage);
+        if (mapped) {
+          this.state.usage = addUsage2(this.state.usage, mapped.usage);
+          if (mapped.costUsd !== void 0) {
+            this.state.costUsd = (this.state.costUsd ?? 0) + mapped.costUsd;
+          }
+        }
+        const kind = mapStopReason(message?.stopReason);
+        if (kind) this.state.turnEndKind = kind;
+        this.emit({
+          type: "status",
+          phase: "step_end",
+          ...mapped ? { usage: mapped.usage } : {}
+        });
+        if (kind) this.emit({ type: "status", phase: "turn_end", reason: kind });
+        return;
+      }
+      case "agent_settled": {
+        if (event.aborted === true) {
+          this.state.turnEndKind = "aborted";
+          return;
+        }
+        if (this.state.turnEndKind === "completed" && this.lastAssistantText !== "") {
+          this.state.finalText = this.lastAssistantText;
+          this.emit({ type: "final", text: this.lastAssistantText });
+        }
+        return;
+      }
+      case "error": {
+        const error62 = typeof event.message === "string" ? event.message : "pi error";
+        this.state.errorMessage = error62;
+        this.emit({ type: "error", message: error62 });
+        return;
+      }
+      default:
+        return;
+    }
+  }
+};
+
+// src/engines/pi.ts
+function parseModel(value) {
+  let text = value.trim();
+  let thinking;
+  const colon = text.lastIndexOf(":");
+  if (colon > 0 && /^[a-z]+$/i.test(text.slice(colon + 1))) {
+    thinking = text.slice(colon + 1);
+    text = text.slice(0, colon);
+  }
+  const slash = text.indexOf("/");
+  if (slash > 0) {
+    return {
+      provider: text.slice(0, slash),
+      model: text.slice(slash + 1),
+      ...thinking ? { thinking } : {}
+    };
+  }
+  return { ...text ? { model: text } : {}, ...thinking ? { thinking } : {} };
+}
+var PiEngine = class {
+  constructor(config2, baseEnv) {
+    this.config = config2;
+    this.baseEnv = baseEnv;
+  }
+  config;
+  baseEnv;
+  id = "pi";
+  label = "pi";
+  defaultProfile = "default";
+  supportsResume = true;
+  version = "unavailable";
+  profiles = {};
+  async init() {
+    this.profiles = await this.loadProfiles();
+    const result = await runCapture(this.config.piBin ?? "pi", ["--version"], {
+      timeoutMs: 1e4
+    });
+    this.version = result.code === 0 ? result.stdout.trim() : "unavailable";
+    return { version: this.version };
+  }
+  async availableProfiles() {
+    return ["default", ...Object.keys(this.profiles).sort()];
+  }
+  async resolveProfile(name) {
+    const profile = name.trim() || "default";
+    if (profile === "default" || profile in this.profiles) return profile;
+    if (/^[A-Za-z0-9][A-Za-z0-9._-]*\/.+$/.test(profile)) return profile;
+    throw new JobError(
+      "unknown_profile",
+      `unknown pi profile ${profile}; available: ${(await this.availableProfiles()).join(", ")}`
+    );
+  }
+  async readProfileMetadata(profile) {
+    const entry = this.profiles[profile];
+    if (entry) {
+      return {
+        ...entry.provider ? { provider: entry.provider } : {},
+        ...entry.model ? { model: entry.model } : {},
+        ...entry.thinking ? { thinking: entry.thinking } : {}
+      };
+    }
+    if (profile === "default") {
+      return this.config.piModel?.trim() ? parseModel(this.config.piModel) : {};
+    }
+    return parseModel(profile);
+  }
+  async ensureReady() {
+  }
+  async launch(spec, task) {
+    const metadata = await this.readProfileMetadata(spec.profile);
+    const modelArg = metadata.provider && metadata.model ? `${metadata.provider}/${metadata.model}` : metadata.model;
+    const thinking = metadata.thinking ?? (spec.profile === "default" ? this.config.piThinking?.trim() : void 0);
+    const args = ["--mode", "json"];
+    if (modelArg) args.push("--model", modelArg);
+    if (thinking) args.push("--thinking", thinking);
+    args.push(
+      "--no-extensions",
+      "--no-skills",
+      "--no-mcp",
+      "--no-context-files",
+      "--no-approve",
+      "--session-dir",
+      join5(spec.sessionDir, "pi-sessions"),
+      "--tools",
+      spec.access === "workspace-write" ? "read,bash,edit,write" : "read,grep,find,ls"
+    );
+    if (spec.sessionId) args.push("--session-id", spec.sessionId);
+    args.push(task);
+    const env = this.baseEnv(spec.depth);
+    const agentDir = this.config.piAgentDir?.trim();
+    if (agentDir) env.PI_CODING_AGENT_DIR = agentDir;
+    return {
+      command: this.config.piBin ?? "pi",
+      args,
+      env,
+      taskInput: "argv"
+    };
+  }
+  createFold(onEvent) {
+    return new PiFold(onEvent);
+  }
+  async loadProfiles() {
+    const file2 = this.config.piProfilesFile;
+    if (!file2) return {};
+    try {
+      const raw = JSON.parse(await readFile5(file2, "utf8"));
+      const result = {};
+      for (const [name, value] of Object.entries(raw)) {
+        if (value === null || typeof value !== "object" || Array.isArray(value)) continue;
+        const entry = value;
+        result[name] = {
+          ...typeof entry.provider === "string" && entry.provider.trim() ? { provider: entry.provider.trim() } : {},
+          ...typeof entry.model === "string" && entry.model.trim() ? { model: entry.model.trim() } : {},
+          ...typeof entry.thinking === "string" && entry.thinking.trim() ? { thinking: entry.thinking.trim() } : {}
+        };
+      }
+      return result;
+    } catch {
+      return {};
+    }
+  }
+};
+
+// src/engines/index.ts
+function createEngines(config2, baseEnv) {
+  const dsh = new DshEngine(config2, baseEnv);
+  const pi = new PiEngine(config2, baseEnv);
+  return {
+    dsh,
+    pi,
+    byId(id) {
+      return id === "dsh" ? dsh : pi;
+    }
+  };
+}
+
+// src/events.ts
+import { readFile as readFile6 } from "node:fs/promises";
+var DEFAULT_LIMIT = 200;
+var MAX_LIMIT = 500;
+var MAX_RETURNED_EVENT_CHARS = 12e3;
+var MAX_PREVIEW_CHARS = 8e3;
+function clampLimit(value) {
+  if (value === void 0 || !Number.isFinite(value)) return DEFAULT_LIMIT;
+  return Math.max(1, Math.min(MAX_LIMIT, Math.trunc(value)));
+}
+function parseEvent(line, cursor) {
+  const bytes = Buffer.byteLength(line, "utf8");
+  let parsed;
+  try {
+    parsed = JSON.parse(line);
+  } catch {
+    return {
+      cursor,
+      type: "malformed",
+      bytes,
+      preview: line.slice(0, MAX_PREVIEW_CHARS),
+      parse_error: "invalid_json"
+    };
+  }
+  if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
+    return {
+      cursor,
+      type: "malformed",
+      bytes,
+      preview: line.slice(0, MAX_PREVIEW_CHARS),
+      parse_error: "not_an_object"
+    };
+  }
+  const event = parsed;
+  const type = typeof event.type === "string" ? event.type : "unknown";
+  const serialized = JSON.stringify(event);
+  if (serialized.length > MAX_RETURNED_EVENT_CHARS) {
+    return {
+      cursor,
+      type,
+      bytes,
+      truncated: true,
+      preview: serialized.slice(0, MAX_PREVIEW_CHARS)
+    };
+  }
+  return { cursor, type, bytes, event };
+}
+async function readEventPage(eventsPath, cursor = 0, limit) {
+  let text;
+  try {
+    text = await readFile6(eventsPath, "utf8");
+  } catch (err) {
+    if (err.code === "ENOENT") {
+      return { events: [], next_cursor: 0, total_events: 0, has_more: false };
+    }
+    throw err;
+  }
+  const lines = text.split("\n").filter((line) => line.length > 0);
+  const totalEvents = lines.length;
+  const start = Math.max(0, Math.min(totalEvents, Math.trunc(cursor)));
+  const count = clampLimit(limit);
+  const events = lines.slice(start, start + count).map((line, index) => parseEvent(line, start + index));
+  const nextCursor = start + events.length;
+  return {
+    events,
+    next_cursor: nextCursor,
+    total_events: totalEvents,
+    has_more: nextCursor < totalEvents
+  };
+}
 
 // src/pricing.ts
 var PRICING = {
@@ -37588,14 +38074,6 @@ function steerLabel(previous, fallbackId) {
   const stem = stacked === null ? base : base.slice(0, stacked.index);
   return `${stem.slice(0, Math.max(0, 80 - suffix.length))}${suffix}`;
 }
-var JobError = class extends Error {
-  code;
-  constructor(code, message) {
-    super(message);
-    this.name = "JobError";
-    this.code = code;
-  }
-};
 function appendTail(current, chunk, maxBytes = MAX_STDERR) {
   const combined = current + chunk;
   if (Buffer.byteLength(combined, "utf8") <= maxBytes) return combined;
@@ -37603,10 +38081,15 @@ function appendTail(current, chunk, maxBytes = MAX_STDERR) {
   while (start > 0 && Buffer.byteLength(combined.slice(start), "utf8") <= maxBytes) start -= 1;
   return combined.slice(start + 1);
 }
+function costOf(job) {
+  return job.fold.state.costUsd ?? estimateCostUsd(job.provider, job.model, job.fold.state.usage);
+}
 function persisted(job) {
   return {
+    schemaVersion: 1,
     id: job.id,
     label: job.label,
+    backend: job.backend,
     groupId: job.groupId,
     groupName: job.groupName,
     ownerId: job.ownerId,
@@ -37614,7 +38097,7 @@ function persisted(job) {
     profile: job.profile,
     provider: job.provider,
     model: job.model,
-    costUsd: estimateCostUsd(job.provider, job.model, job.fold.state.usage),
+    costUsd: costOf(job),
     access: job.access,
     isolation: job.isolation,
     timeoutMs: job.timeoutMs,
@@ -37648,8 +38131,8 @@ function persisted(job) {
     jobPath: job.jobPath
   };
 }
-function fromPersisted(saved) {
-  const fold = new NdjsonFold();
+function fromPersisted(saved, engine) {
+  const fold = engine.createFold(() => void 0);
   fold.state.sessionId = saved.sessionId;
   fold.state.malformedLines = saved.malformedLines;
   fold.state.eventsCount = saved.eventsCount;
@@ -37658,9 +38141,11 @@ function fromPersisted(saved) {
   fold.state.lastTool = saved.lastTool;
   fold.state.turnEndKind = saved.turnEndKind;
   fold.state.usage = saved.usage;
+  fold.state.costUsd = saved.costUsd;
   return {
     id: saved.id,
     label: saved.label,
+    backend: saved.backend ?? "dsh",
     groupId: saved.groupId ?? saved.ownerId ?? "legacy",
     groupName: saved.groupName ?? "Legacy / ungrouped",
     ownerId: saved.ownerId ?? "unknown",
@@ -37695,15 +38180,17 @@ function fromPersisted(saved) {
     finalPath: saved.finalPath,
     stderrPath: saved.stderrPath,
     jobPath: saved.jobPath,
-    dir: join4(saved.jobPath, "..")
+    dir: join6(saved.jobPath, "..")
   };
 }
 var JobManager = class {
   constructor(config2) {
     this.config = config2;
+    this.backend = config2.backend ?? "dsh";
     this.defaultGroupId = process.env.DSH_WORKERS_SESSION_ID?.trim() || this.ownerId;
     this.defaultGroupName = process.env.DSH_WORKERS_SESSION_NAME?.trim() || basename(process.cwd()) || "dsh-workers";
-    this.activeProfile = process.env.DSH_WORKERS_PROFILE?.trim() || "work-openrouter";
+    const envProfile = process.env.DSH_WORKERS_PROFILE?.trim();
+    this.activeProfile = envProfile || (this.backend === "pi" ? config2.piDefaultProfile ?? "default" : "work-openrouter");
   }
   config;
   jobs = /* @__PURE__ */ new Map();
@@ -37720,29 +38207,29 @@ var JobManager = class {
   dispatchScheduled = false;
   shuttingDown = false;
   watchdogTimer;
-  dshVersion = "unavailable";
-  apiKey;
-  openRouterChatApiKey;
-  openCodeGoApiKey;
+  engineVersion = "unavailable";
+  engines;
+  backend;
   activeProfile;
-  profileReady = /* @__PURE__ */ new Map();
   async init() {
-    await mkdir3(join4(this.config.stateDir, "jobs"), { recursive: true, mode: 448 });
+    await mkdir3(join6(this.config.stateDir, "jobs"), { recursive: true, mode: 448 });
     await pruneExpiredJobs(
       this.config.stateDir,
       this.config.retentionDays,
       this.config.worktreeRoot
     );
-    this.apiKey = await resolveApiKey(this.config);
-    this.openRouterChatApiKey = await resolveOpenRouterChatApiKey(this.config);
-    this.openCodeGoApiKey = await resolveOpenCodeGoApiKey(this.config);
-    const profiles = await this.availableProfiles();
-    if (!process.env.DSH_WORKERS_PROFILE?.trim() && !profiles.includes(this.activeProfile) && profiles.includes("headless")) {
-      this.activeProfile = "headless";
+    this.engines = createEngines(this.config, (depth) => this.baseEnv(depth));
+    const initialized = await Promise.all([this.engines.dsh.init(), this.engines.pi.init()]);
+    const active = this.activeEngine();
+    const profiles = await active.availableProfiles();
+    if (!process.env.DSH_WORKERS_PROFILE?.trim()) {
+      if (!profiles.includes(this.activeProfile) && profiles.includes("headless")) {
+        this.activeProfile = "headless";
+      }
+      if (!profiles.includes(this.activeProfile)) this.activeProfile = active.defaultProfile;
     }
-    await this.resolveProfile(this.activeProfile);
-    const version2 = await runCapture(this.config.dshBin, ["--version"], { timeoutMs: 1e4 });
-    this.dshVersion = version2.code === 0 ? version2.stdout.trim() : "unavailable";
+    this.activeProfile = await active.resolveProfile(this.activeProfile);
+    this.engineVersion = this.backend === "dsh" ? initialized[0].version : initialized[1].version;
     await this.loadPreviousJobs();
     this.startWatchdog();
   }
@@ -37755,46 +38242,25 @@ var JobManager = class {
     }, WATCHDOG_INTERVAL_MS);
     this.watchdogTimer.unref();
   }
+  activeEngine() {
+    return this.engines.byId(this.backend);
+  }
+  engineFor(id) {
+    return this.engines.byId(id);
+  }
   async availableProfiles() {
-    try {
-      const entries = await readdir2(join4(this.config.dshHome, "profiles"), {
-        withFileTypes: true
-      });
-      return entries.filter((entry) => entry.isDirectory()).map((entry) => entry.name).sort();
-    } catch {
-      return [];
-    }
+    return this.activeEngine().availableProfiles();
   }
   async resolveProfile(name) {
-    const profile = name.trim();
-    if (!/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(profile)) {
-      throw new JobError("unknown_profile", `invalid profile name: ${profile}`);
-    }
-    const profiles = await this.availableProfiles();
-    if (!profiles.includes(profile)) {
-      throw new JobError(
-        "unknown_profile",
-        `unknown profile ${profile}; available: ${profiles.join(", ") || "none"}`
-      );
-    }
-    return profile;
+    return this.activeEngine().resolveProfile(name);
   }
   async readProfileMetadata(profile) {
-    try {
-      const raw = JSON.parse(
-        await readFile5(join4(this.config.dshHome, "profiles", profile, "metadata.json"), "utf8")
-      );
-      return {
-        ...typeof raw.provider === "string" && raw.provider.trim() ? { provider: raw.provider.trim() } : {},
-        ...typeof raw.model === "string" && raw.model.trim() ? { model: raw.model.trim() } : {}
-      };
-    } catch {
-      return {};
-    }
+    return this.activeEngine().readProfileMetadata(profile);
   }
   async profileStatus() {
     const profiles = await this.availableProfiles();
     return {
+      backend: this.backend,
       profile: this.activeProfile,
       profiles,
       ...await this.readProfileMetadata(this.activeProfile)
@@ -37805,20 +38271,20 @@ var JobManager = class {
     return this.profileStatus();
   }
   async loadPreviousJobs() {
-    const root = join4(this.config.stateDir, "jobs");
+    const root = join6(this.config.stateDir, "jobs");
     let entries;
     try {
-      entries = await readdir2(root, { withFileTypes: true });
+      entries = await readdir3(root, { withFileTypes: true });
     } catch {
       return;
     }
     for (const entry of entries) {
       if (!entry.isDirectory()) continue;
-      const jobPath = join4(root, entry.name, "job.json");
+      const jobPath = join6(root, entry.name, "job.json");
       try {
-        const saved = JSON.parse(await readFile5(jobPath, "utf8"));
+        const saved = JSON.parse(await readFile7(jobPath, "utf8"));
         if (!saved?.id) continue;
-        const job = fromPersisted(saved);
+        const job = fromPersisted(saved, this.engineFor(saved.backend ?? "dsh"));
         if (!job.terminal) {
           if (job.pid !== void 0 && job.pgidStartTime !== void 0) {
             const currentStart = await readStartTime(job.pid);
@@ -37844,7 +38310,8 @@ var JobManager = class {
     const jobs = this.selectJobs(jobIds).map((job) => this.summary(job));
     return {
       server: {
-        dsh_version: this.dshVersion,
+        dsh_version: this.engineVersion,
+        backend: this.backend,
         max_concurrent: this.config.maxConcurrent,
         max_queue: this.config.maxQueue,
         running: this.running.size,
@@ -37904,6 +38371,8 @@ var JobManager = class {
       this.config.maxTimeoutMs,
       Math.max(6e4, (input2.timeout_s ?? Math.round(this.config.defaultTimeoutMs / 1e3)) * 1e3)
     );
+    let backend;
+    let engine;
     let profile;
     let provider;
     let model;
@@ -37929,12 +38398,19 @@ var JobManager = class {
         throw new JobError("resume_unavailable", "the original job is still active");
       if (!original.sessionId)
         throw new JobError("resume_unavailable", "the original job has no session id");
-      profile = original.profile;
-      await this.resolveProfile(profile);
+      backend = original.backend ?? "dsh";
+      if (input2.backend && input2.backend !== backend) {
+        throw new JobError(
+          "resume_unavailable",
+          "resume_job_id cannot change the backend of the original job"
+        );
+      }
+      engine = this.engineFor(backend);
+      profile = await engine.resolveProfile(original.profile);
       provider = original.provider;
       model = original.model;
       if (!provider || !model) {
-        const metadata = await this.readProfileMetadata(profile);
+        const metadata = await engine.readProfileMetadata(profile);
         provider ??= metadata.provider;
         model ??= metadata.model;
       }
@@ -37976,8 +38452,11 @@ var JobManager = class {
         this.writeLocks.set(cwd, id);
       }
     } else {
-      profile = await this.resolveProfile(input2.profile ?? this.activeProfile);
-      const metadata = await this.readProfileMetadata(profile);
+      backend = input2.backend ?? this.backend;
+      engine = this.engineFor(backend);
+      const fallbackProfile = backend === this.backend ? this.activeProfile : engine.defaultProfile;
+      profile = await engine.resolveProfile(input2.profile ?? fallbackProfile);
+      const metadata = await engine.readProfileMetadata(profile);
       provider = metadata.provider;
       model = metadata.model;
       cwd = await this.resolveCwd(input2.cwd);
@@ -38009,11 +38488,12 @@ var JobManager = class {
     if (sessionId) this.sessionLocks.set(sessionId, id);
     const resolvedGroupId = groupId ?? this.defaultGroupId;
     const resolvedGroupName = groupName ?? this.defaultGroupName;
-    const dir = join4(this.config.stateDir, "jobs", id);
+    const dir = join6(this.config.stateDir, "jobs", id);
     await mkdir3(dir, { recursive: true, mode: 448 });
     const job = {
       id,
       label: input2.label,
+      backend,
       groupId: resolvedGroupId,
       groupName: resolvedGroupName,
       ownerId: this.ownerId,
@@ -38034,12 +38514,12 @@ var JobManager = class {
       stderrTail: "",
       errorMessage: void 0,
       alerts: [],
-      fold: new NdjsonFold(),
+      fold: engine.createFold(() => void 0),
       terminal: false,
-      eventsPath: join4(dir, "events.ndjson"),
-      finalPath: join4(dir, "final.md"),
-      stderrPath: join4(dir, "stderr.log"),
-      jobPath: join4(dir, "job.json"),
+      eventsPath: join6(dir, "events.ndjson"),
+      finalPath: join6(dir, "final.md"),
+      stderrPath: join6(dir, "stderr.log"),
+      jobPath: join6(dir, "job.json"),
       dir
     };
     this.jobs.set(id, job);
@@ -38051,6 +38531,7 @@ var JobManager = class {
       job_id: id,
       status: job.status,
       profile: job.profile,
+      backend: job.backend,
       provider: job.provider,
       model: job.model,
       group_id: job.groupId,
@@ -38086,64 +38567,50 @@ var JobManager = class {
     });
   }
   ensureReady(profile) {
-    let ready = this.profileReady.get(profile);
-    if (!ready) {
-      ready = (async () => {
-        const env = this.childEnv(1);
-        const result = await runCapture(this.config.dshBin, ["--profile", profile, "--help"], {
-          cwd: this.config.allowedRoots[0],
-          env,
-          timeoutMs: 3e4
-        });
-        if (result.code !== 0) {
-          throw new JobError(
-            "dsh_unavailable",
-            `cannot initialize dsh profile ${profile}: ${result.stderr.trim()}`
-          );
-        }
-      })();
-      this.profileReady.set(profile, ready);
-      void ready.catch(() => this.profileReady.delete(profile));
-    }
-    return ready;
+    return this.activeEngine().ensureReady(profile);
   }
-  childEnv(depth) {
+  baseEnv(depth) {
     const env = {};
     for (const name of this.config.envAllow) {
       const value = process.env[name];
       if (value !== void 0) env[name] = value;
     }
-    env.DSH_HOME = this.config.dshHome;
-    env.DSH_PERMISSION_MODE = "read-only";
-    env.DSH_TELEMETRY_DISABLED = "1";
     env.DSH_WORKERS_DEPTH = String(depth);
-    if (this.apiKey) env.DEEPSEEK_API_KEY = this.apiKey;
-    if (this.openRouterChatApiKey) env.OPENROUTER_CHAT_API_KEY = this.openRouterChatApiKey;
-    if (this.openCodeGoApiKey) env.OPENCODE_GO_API_KEY = this.openCodeGoApiKey;
     return env;
   }
   async launch(job) {
-    await this.ensureReady(job.profile);
+    const engine = this.engineFor(job.backend);
+    await engine.ensureReady(job.profile);
     if (job.terminal || this.shuttingDown) return;
     const depth = Number(process.env.DSH_WORKERS_DEPTH ?? 0) + 1;
-    const env = this.childEnv(depth);
-    env.DSH_PERMISSION_MODE = job.access === "workspace-write" ? "workspace-write" : "read-only";
-    const args = ["--profile", job.profile, "--json"];
-    if (job.sessionId) args.push("--session-id", job.sessionId);
+    const plan = await engine.launch(
+      {
+        jobId: job.id,
+        cwd: job.cwd,
+        profile: job.profile,
+        provider: job.provider,
+        model: job.model,
+        access: job.access,
+        sessionId: job.sessionId,
+        sessionDir: job.dir,
+        depth
+      },
+      job.task
+    );
     const child = spawnDsh({
-      dshBin: this.config.dshBin,
-      args,
+      dshBin: plan.command,
+      args: plan.args,
       cwd: job.cwd,
-      env
+      env: plan.env
     });
-    if (!child.pid) throw new JobError("spawn_error", "dsh did not produce a pid");
+    if (!child.pid) throw new JobError("spawn_error", `${job.backend} did not produce a pid`);
     job.child = child;
     job.pid = child.pid;
     job.pgidStartTime = await readStartTime(child.pid);
     job.status = "running";
     job.startedAt = (/* @__PURE__ */ new Date()).toISOString();
     job.eventStream = createWriteStream(job.eventsPath, { flags: "a", mode: 384 });
-    job.fold = new NdjsonFold((line) => {
+    job.fold = engine.createFold((line) => {
       job.eventStream?.write(`${line}
 `);
       if (!job.progressPersistScheduled) {
@@ -38178,7 +38645,8 @@ var JobManager = class {
       void this.timeout(job).catch(() => void 0);
     }, job.timeoutMs);
     await this.writeJob(job);
-    child.stdin.end(job.task);
+    if (plan.taskInput === "argv") child.stdin.end();
+    else child.stdin.end(job.task);
   }
   async onClose(job, code, signal) {
     if (job.eventStream) {
@@ -38381,7 +38849,7 @@ var JobManager = class {
     const previous = job.alerts;
     const alerts = computeAlerts(job.fold.state, this.watchdogOptions(), {
       now: Date.now(),
-      costUsd: estimateCostUsd(job.provider, job.model, job.fold.state.usage),
+      costUsd: costOf(job),
       previous,
       activeSince: Date.parse(job.startedAt ?? job.createdAt)
     });
@@ -38462,7 +38930,7 @@ var JobManager = class {
     let final = job.finalText;
     if (final === void 0) {
       try {
-        final = await readFile5(job.finalPath, "utf8");
+        final = await readFile7(job.finalPath, "utf8");
       } catch {
         final = void 0;
       }
@@ -38473,10 +38941,11 @@ var JobManager = class {
       reason: job.reason,
       session_id: job.sessionId,
       profile: job.profile,
+      backend: job.backend,
       provider: job.provider,
       model: job.model,
       usage: job.fold.state.usage,
-      cost_usd: estimateCostUsd(job.provider, job.model, job.fold.state.usage),
+      cost_usd: costOf(job),
       final: final === void 0 ? void 0 : final.slice(0, maxChars),
       final_truncated: final !== void 0 && final.length > maxChars,
       final_path: final !== void 0 ? job.finalPath : void 0,
@@ -38587,6 +39056,7 @@ var JobManager = class {
       job_id: job.id,
       label: job.label,
       profile: job.profile,
+      backend: job.backend,
       provider: job.provider,
       model: job.model,
       group_id: job.groupId,
@@ -38615,7 +39085,7 @@ var JobManager = class {
       last_event_s_ago: fold.lastEventAt ? Math.max(0, Math.round((Date.now() - fold.lastEventAt) / 1e3)) : void 0,
       malformed_lines: fold.malformedLines,
       usage: fold.usage,
-      cost_usd: estimateCostUsd(job.provider, job.model, fold.usage),
+      cost_usd: costOf(job),
       alerts: job.alerts
     };
   }
@@ -38670,7 +39140,7 @@ var JobManager = class {
   }
   async eventsTail(path) {
     try {
-      const text = await readFile5(path, "utf8");
+      const text = await readFile7(path, "utf8");
       const lines = text.split("\n").filter(Boolean).slice(-30);
       return lines.join("\n").slice(-32768);
     } catch {
@@ -38726,7 +39196,10 @@ async function main() {
       inputSchema: external_exports.strictObject({
         task: external_exports.string().min(1).max(1e5).describe("Self-contained task for the worker."),
         label: external_exports.string().trim().min(1).max(80).optional().describe("Short label for status output."),
-        profile: external_exports.string().trim().min(1).max(80).optional().describe("DSH profile for this job. Defaults to the profile selected with dsh_profile."),
+        backend: external_exports.enum(["dsh", "pi"]).optional().describe("Backend for this job. Defaults to the server backend (DSH_WORKERS_BACKEND)."),
+        profile: external_exports.string().trim().min(1).max(80).optional().describe(
+          "Backend profile for this job: a dsh profile name, a pi model pattern, or a named pi profile. Defaults to the active profile."
+        ),
         group_id: external_exports.string().trim().min(1).max(200).optional().describe("Stable parent-session id used to group jobs in the dashboard."),
         group_name: external_exports.string().trim().min(1).max(120).optional().describe("Human-readable parent-session name shown in the dashboard."),
         cwd: external_exports.string().min(1).max(4096).optional().describe(

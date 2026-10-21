@@ -75,6 +75,7 @@ export interface JobSummary {
   job_id: string;
   label?: string;
   profile: string;
+  backend: 'dsh' | 'pi';
   provider?: string;
   model?: string;
   group_id: string;
@@ -106,6 +107,7 @@ export interface StartInput {
   task: string;
   label?: string;
   profile?: string;
+  backend?: 'dsh' | 'pi';
   group_id?: string;
   group_name?: string;
   cwd?: string;
@@ -122,6 +124,7 @@ export interface StartResult {
   job_id: string;
   status: JobStatus;
   profile: string;
+  backend: 'dsh' | 'pi';
   provider?: string;
   model?: string;
   group_id: string;
@@ -134,6 +137,7 @@ export interface StartResult {
 export interface StatusOutput {
   server: {
     dsh_version: string;
+    backend: 'dsh' | 'pi';
     max_concurrent: number;
     max_queue: number;
     running: number;

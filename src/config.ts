@@ -4,7 +4,14 @@ import { join, resolve } from 'node:path';
 import { expandHome, resolveAllowedRoots } from './paths.js';
 
 export interface Config {
+  backend?: 'dsh' | 'pi';
   dshBin: string;
+  piBin?: string;
+  piDefaultProfile?: string;
+  piProfilesFile?: string;
+  piModel?: string;
+  piThinking?: string;
+  piAgentDir?: string;
   allowedRoots: string[];
   stateDir: string;
   worktreeRoot: string;
@@ -171,10 +178,22 @@ export async function loadConfig(): Promise<Config> {
     ...splitList(process.env.DSH_WORKERS_ENV_ALLOW),
   ];
 
+  const piAgentDir = pathEnv('DSH_WORKERS_PI_AGENT_DIR');
   return {
+    backend: enumEnv<'dsh' | 'pi'>('DSH_WORKERS_BACKEND', 'dsh', ['dsh', 'pi']),
     dshBin: process.env.DSH_WORKERS_DSH_BIN
       ? resolve(expandHome(process.env.DSH_WORKERS_DSH_BIN))
       : 'dsh',
+    piBin: process.env.DSH_WORKERS_PI_BIN
+      ? resolve(expandHome(process.env.DSH_WORKERS_PI_BIN))
+      : 'pi',
+    piDefaultProfile: process.env.DSH_WORKERS_PI_PROFILE?.trim() || 'default',
+    piProfilesFile: resolve(
+      expandHome(process.env.DSH_WORKERS_PI_PROFILES_FILE ?? join(stateDir, 'pi-profiles.json')),
+    ),
+    piModel: process.env.DSH_WORKERS_PI_MODEL?.trim() || '',
+    piThinking: process.env.DSH_WORKERS_PI_THINKING?.trim() || '',
+    piAgentDir: piAgentDir ? resolve(expandHome(piAgentDir)) : '',
     allowedRoots,
     stateDir,
     worktreeRoot,
