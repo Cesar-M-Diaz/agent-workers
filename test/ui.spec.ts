@@ -11,7 +11,7 @@ describe('dashboard API', () => {
   let baseUrl: string;
 
   beforeAll(async () => {
-    root = await mkdtemp(join(tmpdir(), 'dsh-workers-ui-test-'));
+    root = await mkdtemp(join(tmpdir(), 'agent-workers-ui-test-'));
     const jobDir = join(root, 'jobs', 'j_test');
     await mkdir(jobDir, { recursive: true });
     await writeFile(
@@ -90,7 +90,7 @@ describe('dashboard API', () => {
 
   it('reports health and lists persisted jobs', async () => {
     const health = await fetch(`${baseUrl}/api/health`).then((response) => response.json());
-    expect(health.name).toBe('dsh-workers-ui');
+    expect(health.name).toBe('agent-workers-ui');
     expect(health.state_dir).toBe(root);
 
     const body = (await fetch(`${baseUrl}/api/jobs`).then((response) => response.json())) as {
@@ -159,7 +159,7 @@ describe('dashboard API', () => {
     expect(response.status).toBe(200);
     expect(response.headers.get('content-type')).toContain('text/html');
     const html = await response.text();
-    expect(html).toContain('DSH Workers');
+    expect(html).toContain('Agent Workers');
     expect(html).toContain('.empty[hidden], .job-view[hidden] { display: none; }');
     expect(html).toContain('tokens in');
     expect(html).toContain('cache read');

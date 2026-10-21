@@ -9,7 +9,7 @@ describe('readEventPage', () => {
   let eventsPath: string;
 
   beforeAll(async () => {
-    root = await mkdtemp(join(tmpdir(), 'dsh-workers-events-test-'));
+    root = await mkdtemp(join(tmpdir(), 'agent-workers-events-test-'));
     eventsPath = join(root, 'events.ndjson');
     await writeFile(
       eventsPath,

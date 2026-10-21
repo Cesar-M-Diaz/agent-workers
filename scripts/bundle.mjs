@@ -42,7 +42,7 @@ async function bundle(target) {
 }
 
 if (check) {
-  const temporary = await mkdtemp(join(tmpdir(), 'dsh-workers-bundle-'));
+  const temporary = await mkdtemp(join(tmpdir(), 'agent-workers-bundle-'));
   try {
     await bundle(temporary);
     const stale = [];

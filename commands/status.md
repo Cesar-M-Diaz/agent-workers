@@ -1,9 +1,9 @@
 ---
-description: Show DSH workers for the current session
+description: Show workers for the current session
 argument-hint: [job_id ...]
-allowed-tools: mcp__plugin_dsh-workers_dsh-workers__dsh_status
+allowed-tools: mcp__plugin_agent-workers_agent-workers__worker_status
 ---
-Call the `dsh_status` MCP tool.
+Call the `worker_status` MCP tool.
 
 Arguments: $ARGUMENTS
 

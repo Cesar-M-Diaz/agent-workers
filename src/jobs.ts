@@ -6,19 +6,13 @@ import { basename, join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { deleteJobRecord, JobAdminError, pruneExpiredJobs } from './admin.js';
 import type { Config } from './config.js';
-import { resolveApiKey, resolveOpenCodeGoApiKey, resolveOpenRouterChatApiKey } from './config.js';
+import { createEngines } from './engines/index.js';
+import type { Engine, EngineId, Fold } from './engines/types.js';
+import { JobError } from './errors.js';
 import { readEventPage } from './events.js';
-import { NdjsonFold } from './ndjson.js';
 import { pathOverlaps, resolveAllowedPath } from './paths.js';
 import { estimateCostUsd } from './pricing.js';
-import {
-  killTree,
-  killTreeByPid,
-  readStartTime,
-  runCapture,
-  spawnDsh,
-  waitForExit,
-} from './proc.js';
+import { killTree, killTreeByPid, readStartTime, spawnDsh, waitForExit } from './proc.js';
 import type {
   AccessMode,
   FailureReason,
@@ -43,6 +37,12 @@ const STEER_SETTLE_TIMEOUT_MS = 30_000;
 const STEER_PREFACE =
   'The supervisor interrupted your previous run to steer you. Your earlier work in this session and working directory is preserved; check the current state before continuing.\n\nNew instruction:\n';
 
+function workerEnv(name: string): string | undefined {
+  const current = process.env[`AGENT_WORKERS_${name}`];
+  if (current !== undefined && current.trim() !== '') return current;
+  return process.env[`DSH_WORKERS_${name}`];
+}
+
 function steerLabel(previous: string | undefined, fallbackId: string): string {
   const base = previous?.trim() || fallbackId;
   const stacked = /\s↻(\d*)$/.exec(base);
@@ -51,18 +51,12 @@ function steerLabel(previous: string | undefined, fallbackId: string): string {
   return `${stem.slice(0, Math.max(0, 80 - suffix.length))}${suffix}`;
 }
 
-export class JobError extends Error {
-  readonly code: string;
-  constructor(code: string, message: string) {
-    super(message);
-    this.name = 'JobError';
-    this.code = code;
-  }
-}
+export { JobError };
 
 interface Job {
   id: string;
   label?: string;
+  backend: EngineId;
   groupId: string;
   groupName: string;
   ownerId: string;
@@ -89,7 +83,7 @@ interface Job {
   stderrTail: string;
   errorMessage?: string;
   alerts: JobAlert[];
-  fold: NdjsonFold;
+  fold: Fold;
   child?: ChildProcessWithoutNullStreams;
   eventStream?: WriteStream;
   timeoutTimer?: NodeJS.Timeout;
@@ -105,9 +99,12 @@ interface Job {
   stderrPath: string;
   jobPath: string;
   dir: string;
+  /** Directory the engine uses for session files; inherited on resume. */
+  sessionDir: string;
 }
 
 interface ProfileStatus {
+  backend: EngineId;
   profile: string;
   profiles: string[];
   provider?: string;
@@ -115,8 +112,10 @@ interface ProfileStatus {
 }
 
 interface PersistedJob {
+  schemaVersion?: number;
   id: string;
   label?: string;
+  backend?: EngineId;
   groupId?: string;
   groupName?: string;
   ownerId?: string;
@@ -156,6 +155,7 @@ interface PersistedJob {
   finalPath: string;
   stderrPath: string;
   jobPath: string;
+  sessionDir?: string;
 }
 
 function appendTail(current: string, chunk: string, maxBytes = MAX_STDERR): string {
@@ -166,10 +166,18 @@ function appendTail(current: string, chunk: string, maxBytes = MAX_STDERR): stri
   return combined.slice(start + 1);
 }
 
+function costOf(job: Job): number | undefined {
+  const reported = job.fold.state.costUsd;
+  if (reported !== undefined && reported > 0) return reported;
+  return estimateCostUsd(job.provider, job.model, job.fold.state.usage) ?? reported;
+}
+
 function persisted(job: Job): PersistedJob {
   return {
+    schemaVersion: 1,
     id: job.id,
     label: job.label,
+    backend: job.backend,
     groupId: job.groupId,
     groupName: job.groupName,
     ownerId: job.ownerId,
@@ -177,7 +185,7 @@ function persisted(job: Job): PersistedJob {
     profile: job.profile,
     provider: job.provider,
     model: job.model,
-    costUsd: estimateCostUsd(job.provider, job.model, job.fold.state.usage),
+    costUsd: costOf(job),
     access: job.access,
     isolation: job.isolation,
     timeoutMs: job.timeoutMs,
@@ -189,6 +197,7 @@ function persisted(job: Job): PersistedJob {
     pid: job.pid,
     pgidStartTime: job.pgidStartTime,
     sessionId: job.sessionId ?? job.fold.state.sessionId,
+    sessionDir: job.sessionDir,
     resumeOf: job.resumeOf,
     steeredFrom: job.steeredFrom,
     worktree: job.worktree,
@@ -212,8 +221,10 @@ function persisted(job: Job): PersistedJob {
   };
 }
 
-function fromPersisted(saved: PersistedJob): Job {
-  const fold = new NdjsonFold();
+function fromPersisted(saved: PersistedJob, engine: Engine): Job {
+  const dir = join(saved.jobPath, '..');
+  const backend: EngineId = saved.backend === 'pi' ? 'pi' : 'dsh';
+  const fold = engine.createFold(() => undefined);
   fold.state.sessionId = saved.sessionId;
   fold.state.malformedLines = saved.malformedLines;
   fold.state.eventsCount = saved.eventsCount;
@@ -222,9 +233,11 @@ function fromPersisted(saved: PersistedJob): Job {
   fold.state.lastTool = saved.lastTool;
   fold.state.turnEndKind = saved.turnEndKind;
   fold.state.usage = saved.usage;
+  if (backend === 'pi') fold.state.costUsd = saved.costUsd;
   return {
     id: saved.id,
     label: saved.label,
+    backend,
     groupId: saved.groupId ?? saved.ownerId ?? 'legacy',
     groupName: saved.groupName ?? 'Legacy / ungrouped',
     ownerId: saved.ownerId ?? 'unknown',
@@ -259,7 +272,8 @@ function fromPersisted(saved: PersistedJob): Job {
     finalPath: saved.finalPath,
     stderrPath: saved.stderrPath,
     jobPath: saved.jobPath,
-    dir: join(saved.jobPath, '..'),
+    dir,
+    sessionDir: saved.sessionDir ?? dir,
   };
 }
 
@@ -278,18 +292,20 @@ export class JobManager {
   private dispatchScheduled = false;
   private shuttingDown = false;
   private watchdogTimer?: NodeJS.Timeout;
-  private dshVersion = 'unavailable';
-  private apiKey?: string;
-  private openRouterChatApiKey?: string;
-  private openCodeGoApiKey?: string;
+  private engineVersion = 'unavailable';
+  private engines!: ReturnType<typeof createEngines>;
+  private readonly backend: EngineId;
   private activeProfile: string;
-  private readonly profileReady = new Map<string, Promise<void>>();
 
   constructor(private readonly config: Config) {
-    this.defaultGroupId = process.env.DSH_WORKERS_SESSION_ID?.trim() || this.ownerId;
+    this.backend = config.backend ?? 'dsh';
+    this.defaultGroupId = workerEnv('SESSION_ID')?.trim() || this.ownerId;
     this.defaultGroupName =
-      process.env.DSH_WORKERS_SESSION_NAME?.trim() || basename(process.cwd()) || 'dsh-workers';
-    this.activeProfile = process.env.DSH_WORKERS_PROFILE?.trim() || 'work-openrouter';
+      workerEnv('SESSION_NAME')?.trim() || basename(process.cwd()) || 'agent-workers';
+    const envProfile = workerEnv('PROFILE')?.trim();
+    this.activeProfile =
+      envProfile ||
+      (this.backend === 'pi' ? (config.piDefaultProfile ?? 'default') : 'work-openrouter');
   }
 
   async init(): Promise<void> {
@@ -299,20 +315,37 @@ export class JobManager {
       this.config.retentionDays,
       this.config.worktreeRoot,
     );
-    this.apiKey = await resolveApiKey(this.config);
-    this.openRouterChatApiKey = await resolveOpenRouterChatApiKey(this.config);
-    this.openCodeGoApiKey = await resolveOpenCodeGoApiKey(this.config);
-    const profiles = await this.availableProfiles();
-    if (
-      !process.env.DSH_WORKERS_PROFILE?.trim() &&
-      !profiles.includes(this.activeProfile) &&
-      profiles.includes('headless')
-    ) {
-      this.activeProfile = 'headless';
+    this.engines = createEngines(this.config, (depth) => this.baseEnv(depth));
+    const initialized = await Promise.all([this.engines.dsh.init(), this.engines.pi.init()]);
+    const active = this.activeEngine();
+    const profiles = await active.availableProfiles();
+    const configuredProfile = workerEnv('PROFILE')?.trim();
+    if (!configuredProfile) {
+      if (!profiles.includes(this.activeProfile) && profiles.includes('headless')) {
+        this.activeProfile = 'headless';
+      }
+      if (!profiles.includes(this.activeProfile)) {
+        this.activeProfile = await this.fallbackProfile(active);
+      }
     }
-    await this.resolveProfile(this.activeProfile);
-    const version = await runCapture(this.config.dshBin, ['--version'], { timeoutMs: 10_000 });
-    this.dshVersion = version.code === 0 ? version.stdout.trim() : 'unavailable';
+    try {
+      this.activeProfile = await active.resolveProfile(this.activeProfile);
+    } catch (err) {
+      if (configuredProfile && err instanceof JobError && err.code === 'unknown_profile') {
+        this.activeProfile = await active.resolveProfile(await this.fallbackProfile(active));
+        process.stderr.write(
+          `${JSON.stringify({
+            event: 'profile_fallback',
+            backend: this.backend,
+            requested: configuredProfile,
+            used: this.activeProfile,
+          })}\n`,
+        );
+      } else {
+        throw err;
+      }
+    }
+    this.engineVersion = this.backend === 'dsh' ? initialized[0].version : initialized[1].version;
     await this.loadPreviousJobs();
     this.startWatchdog();
   }
@@ -327,57 +360,49 @@ export class JobManager {
     this.watchdogTimer.unref();
   }
 
-  private async availableProfiles(): Promise<string[]> {
-    try {
-      const entries = await readdir(join(this.config.dshHome, 'profiles'), {
-        withFileTypes: true,
-      });
-      return entries
-        .filter((entry) => entry.isDirectory())
-        .map((entry) => entry.name)
-        .sort();
-    } catch {
-      return [];
+  private activeEngine(): Engine {
+    return this.engines.byId(this.backend);
+  }
+
+  private async fallbackProfile(engine: Engine): Promise<string> {
+    const profiles = await engine.availableProfiles();
+    if (profiles.includes(engine.defaultProfile)) return engine.defaultProfile;
+    if (profiles.includes('headless')) return 'headless';
+    return engine.defaultProfile;
+  }
+
+  private assertBackendAccess(backend: EngineId, access: AccessMode): void {
+    if (backend === 'pi' && access === 'workspace-write' && !this.config.piAllowWrite) {
+      throw new JobError(
+        'pi_write_disabled',
+        'pi workers are read-only by default; set pi_allow_write (AGENT_WORKERS_PI_ALLOW_WRITE=1) to allow workspace writes',
+      );
     }
   }
 
+  private engineFor(id: EngineId): Engine {
+    return this.engines.byId(id);
+  }
+
+  private async availableProfiles(): Promise<string[]> {
+    return this.activeEngine().availableProfiles();
+  }
+
   private async resolveProfile(name: string): Promise<string> {
-    const profile = name.trim();
-    if (!/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(profile)) {
-      throw new JobError('unknown_profile', `invalid profile name: ${profile}`);
-    }
-    const profiles = await this.availableProfiles();
-    if (!profiles.includes(profile)) {
-      throw new JobError(
-        'unknown_profile',
-        `unknown profile ${profile}; available: ${profiles.join(', ') || 'none'}`,
-      );
-    }
-    return profile;
+    return this.activeEngine().resolveProfile(name);
   }
 
   private async readProfileMetadata(profile: string): Promise<{
     provider?: string;
     model?: string;
   }> {
-    try {
-      const raw = JSON.parse(
-        await readFile(join(this.config.dshHome, 'profiles', profile, 'metadata.json'), 'utf8'),
-      ) as Record<string, unknown>;
-      return {
-        ...(typeof raw.provider === 'string' && raw.provider.trim()
-          ? { provider: raw.provider.trim() }
-          : {}),
-        ...(typeof raw.model === 'string' && raw.model.trim() ? { model: raw.model.trim() } : {}),
-      };
-    } catch {
-      return {};
-    }
+    return this.activeEngine().readProfileMetadata(profile);
   }
 
   async profileStatus(): Promise<ProfileStatus> {
     const profiles = await this.availableProfiles();
     return {
+      backend: this.backend,
       profile: this.activeProfile,
       profiles,
       ...(await this.readProfileMetadata(this.activeProfile)),
@@ -403,7 +428,8 @@ export class JobManager {
       try {
         const saved = JSON.parse(await readFile(jobPath, 'utf8')) as PersistedJob;
         if (!saved?.id) continue;
-        const job = fromPersisted(saved);
+        const backend: EngineId = saved.backend === 'pi' ? 'pi' : 'dsh';
+        const job = fromPersisted(saved, this.engineFor(backend));
         if (!job.terminal) {
           if (job.pid !== undefined && job.pgidStartTime !== undefined) {
             const currentStart = await readStartTime(job.pid);
@@ -431,7 +457,8 @@ export class JobManager {
     const jobs = this.selectJobs(jobIds).map((job) => this.summary(job));
     return {
       server: {
-        dsh_version: this.dshVersion,
+        engine_version: this.engineVersion,
+        backend: this.backend,
         max_concurrent: this.config.maxConcurrent,
         max_queue: this.config.maxQueue,
         running: this.running.size,
@@ -488,10 +515,10 @@ export class JobManager {
 
   async start(input: StartInput): Promise<StartResult> {
     if (this.shuttingDown)
-      throw new JobError('dsh_unavailable', 'the worker manager is shutting down');
-    const depth = Number(process.env.DSH_WORKERS_DEPTH ?? 0);
+      throw new JobError('worker_unavailable', 'the worker manager is shutting down');
+    const depth = Number(workerEnv('DEPTH') ?? 0);
     if (!Number.isInteger(depth) || depth < 0) {
-      throw new JobError('depth_exceeded', 'DSH_WORKERS_DEPTH is invalid');
+      throw new JobError('depth_exceeded', 'AGENT_WORKERS_DEPTH is invalid');
     }
     if (depth >= this.config.maxDepth) {
       throw new JobError('depth_exceeded', `maximum worker depth ${this.config.maxDepth} reached`);
@@ -507,6 +534,8 @@ export class JobManager {
       Math.max(60_000, (input.timeout_s ?? Math.round(this.config.defaultTimeoutMs / 1000)) * 1000),
     );
 
+    let backend: EngineId;
+    let engine: Engine;
     let profile: string;
     let provider: string | undefined;
     let model: string | undefined;
@@ -515,6 +544,7 @@ export class JobManager {
     let isolation: Isolation;
     let worktree: WorktreeInfo | undefined;
     let sessionId: string | undefined;
+    let sessionDir: string | undefined;
     let resumeOf: string | undefined;
     const steeredFrom = input.steered_from;
     let groupId = input.group_id?.trim();
@@ -538,12 +568,25 @@ export class JobManager {
         throw new JobError('resume_unavailable', 'the original job is still active');
       if (!original.sessionId)
         throw new JobError('resume_unavailable', 'the original job has no session id');
-      profile = original.profile;
-      await this.resolveProfile(profile);
+      backend = original.backend ?? 'dsh';
+      if (input.backend && input.backend !== backend) {
+        throw new JobError(
+          'resume_unavailable',
+          'resume_job_id cannot change the backend of the original job',
+        );
+      }
+      engine = this.engineFor(backend);
+      if (!engine.supportsResume) {
+        throw new JobError(
+          'resume_unavailable',
+          `${backend} does not support resuming a session yet`,
+        );
+      }
+      profile = await engine.resolveProfile(original.profile);
       provider = original.provider;
       model = original.model;
       if (!provider || !model) {
-        const metadata = await this.readProfileMetadata(profile);
+        const metadata = await engine.readProfileMetadata(profile);
         provider ??= metadata.provider;
         model ??= metadata.model;
       }
@@ -569,9 +612,17 @@ export class JobManager {
         cwd = await this.resolveCwd(original.cwd);
       }
       access = original.access;
+      this.assertBackendAccess(backend, access);
       isolation = original.isolation;
       worktree = original.worktree;
       sessionId = original.sessionId;
+      sessionDir = original.sessionDir ?? original.dir;
+      if (engine.hasSession && !(await engine.hasSession(sessionDir, sessionId))) {
+        throw new JobError(
+          'resume_unavailable',
+          `session ${sessionId} is missing from ${sessionDir}; it was deleted or pruned`,
+        );
+      }
       resumeOf = original.id;
       groupId ??= original.groupId;
       groupName ??= original.groupName;
@@ -585,12 +636,17 @@ export class JobManager {
         this.writeLocks.set(cwd, id);
       }
     } else {
-      profile = await this.resolveProfile(input.profile ?? this.activeProfile);
-      const metadata = await this.readProfileMetadata(profile);
+      backend = input.backend ?? this.backend;
+      engine = this.engineFor(backend);
+      const fallbackProfile =
+        backend === this.backend ? this.activeProfile : await this.fallbackProfile(engine);
+      profile = await engine.resolveProfile(input.profile ?? fallbackProfile);
+      const metadata = await engine.readProfileMetadata(profile);
       provider = metadata.provider;
       model = metadata.model;
       cwd = await this.resolveCwd(input.cwd);
       access = input.access ?? 'read-only';
+      this.assertBackendAccess(backend, access);
       isolation = input.isolation ?? (access === 'workspace-write' ? 'worktree' : 'none');
       if (isolation === 'worktree') {
         try {
@@ -621,10 +677,12 @@ export class JobManager {
     const resolvedGroupName = groupName ?? this.defaultGroupName;
 
     const dir = join(this.config.stateDir, 'jobs', id);
+    sessionDir ??= dir;
     await mkdir(dir, { recursive: true, mode: 0o700 });
     const job: Job = {
       id,
       label: input.label,
+      backend,
       groupId: resolvedGroupId,
       groupName: resolvedGroupName,
       ownerId: this.ownerId,
@@ -645,13 +703,14 @@ export class JobManager {
       stderrTail: '',
       errorMessage: undefined,
       alerts: [],
-      fold: new NdjsonFold(),
+      fold: engine.createFold(() => undefined),
       terminal: false,
       eventsPath: join(dir, 'events.ndjson'),
       finalPath: join(dir, 'final.md'),
       stderrPath: join(dir, 'stderr.log'),
       jobPath: join(dir, 'job.json'),
       dir,
+      sessionDir,
     };
     this.jobs.set(id, job);
     this.queue.push(job);
@@ -662,6 +721,7 @@ export class JobManager {
       job_id: id,
       status: job.status,
       profile: job.profile,
+      backend: job.backend,
       provider: job.provider,
       model: job.model,
       group_id: job.groupId,
@@ -704,69 +764,52 @@ export class JobManager {
     });
   }
 
-  private ensureReady(profile: string): Promise<void> {
-    let ready = this.profileReady.get(profile);
-    if (!ready) {
-      ready = (async () => {
-        const env = this.childEnv(1);
-        const result = await runCapture(this.config.dshBin, ['--profile', profile, '--help'], {
-          cwd: this.config.allowedRoots[0],
-          env,
-          timeoutMs: 30_000,
-        });
-        if (result.code !== 0) {
-          throw new JobError(
-            'dsh_unavailable',
-            `cannot initialize dsh profile ${profile}: ${result.stderr.trim()}`,
-          );
-        }
-      })();
-      this.profileReady.set(profile, ready);
-      void ready.catch(() => this.profileReady.delete(profile));
-    }
-    return ready;
-  }
-
-  private childEnv(depth: number): Record<string, string> {
+  private baseEnv(depth: number): Record<string, string> {
     const env: Record<string, string> = {};
     for (const name of this.config.envAllow) {
       const value = process.env[name];
       if (value !== undefined) env[name] = value;
     }
-    env.DSH_HOME = this.config.dshHome;
-    env.DSH_PERMISSION_MODE = 'read-only';
-    env.DSH_TELEMETRY_DISABLED = '1';
+    env.AGENT_WORKERS_DEPTH = String(depth);
     env.DSH_WORKERS_DEPTH = String(depth);
-    if (this.apiKey) env.DEEPSEEK_API_KEY = this.apiKey;
-    if (this.openRouterChatApiKey) env.OPENROUTER_CHAT_API_KEY = this.openRouterChatApiKey;
-    if (this.openCodeGoApiKey) env.OPENCODE_GO_API_KEY = this.openCodeGoApiKey;
     return env;
   }
 
   private async launch(job: Job): Promise<void> {
-    await this.ensureReady(job.profile);
+    const engine = this.engineFor(job.backend);
+    await engine.ensureReady(job.profile);
     // A queued/starting job can be cancelled (or steered) while the profile
     // check is in flight; do not spawn a process for a job that already settled.
     if (job.terminal || this.shuttingDown) return;
-    const depth = Number(process.env.DSH_WORKERS_DEPTH ?? 0) + 1;
-    const env = this.childEnv(depth);
-    env.DSH_PERMISSION_MODE = job.access === 'workspace-write' ? 'workspace-write' : 'read-only';
-    const args = ['--profile', job.profile, '--json'];
-    if (job.sessionId) args.push('--session-id', job.sessionId);
+    const depth = Number(workerEnv('DEPTH') ?? 0) + 1;
+    const plan = await engine.launch(
+      {
+        jobId: job.id,
+        cwd: job.cwd,
+        profile: job.profile,
+        provider: job.provider,
+        model: job.model,
+        access: job.access,
+        sessionId: job.sessionId,
+        sessionDir: job.sessionDir,
+        depth,
+      },
+      job.task,
+    );
     const child = spawnDsh({
-      dshBin: this.config.dshBin,
-      args,
+      dshBin: plan.command,
+      args: plan.args,
       cwd: job.cwd,
-      env,
+      env: plan.env,
     });
-    if (!child.pid) throw new JobError('spawn_error', 'dsh did not produce a pid');
+    if (!child.pid) throw new JobError('spawn_error', `${job.backend} did not produce a pid`);
     job.child = child;
     job.pid = child.pid;
     job.pgidStartTime = await readStartTime(child.pid);
     job.status = 'running';
     job.startedAt = new Date().toISOString();
     job.eventStream = createWriteStream(job.eventsPath, { flags: 'a', mode: 0o600 });
-    job.fold = new NdjsonFold((line) => {
+    job.fold = engine.createFold((line) => {
       job.eventStream?.write(`${line}\n`);
       if (!job.progressPersistScheduled) {
         job.progressPersistScheduled = true;
@@ -800,7 +843,8 @@ export class JobManager {
       void this.timeout(job).catch(() => undefined);
     }, job.timeoutMs);
     await this.writeJob(job);
-    child.stdin.end(job.task);
+    if (plan.taskInput === 'argv') child.stdin.end();
+    else child.stdin.end(job.task);
   }
 
   private async onClose(
@@ -862,7 +906,9 @@ export class JobManager {
             ? 'turn_error'
             : 'nonzero_exit';
       await this.settle(job, 'failed', reason, {
-        errorMessage: signal ? `dsh exited from signal ${signal}` : `dsh exited ${code}`,
+        errorMessage: signal
+          ? `${job.backend} exited from signal ${signal}`
+          : `${job.backend} exited ${code}`,
         cleanTree: false,
       });
       return;
@@ -882,7 +928,14 @@ export class JobManager {
       return;
     }
     if (fold.turnEndKind !== 'completed') {
-      const reason: FailureReason = fold.turnEndKind ? 'turn_aborted' : 'no_turn_end';
+      const reason: FailureReason =
+        fold.turnEndKind === 'aborted'
+          ? 'turn_aborted'
+          : fold.turnEndKind === 'error' || fold.turnEndKind === 'length'
+            ? 'turn_error'
+            : fold.turnEndKind
+              ? 'turn_aborted'
+              : 'no_turn_end';
       await this.settle(job, 'failed', reason, {
         errorMessage: `turn ended with ${fold.turnEndKind ?? 'no turn_end event'}`,
         cleanTree: false,
@@ -957,13 +1010,20 @@ export class JobManager {
     timeout_s?: number;
   }): Promise<Record<string, unknown>> {
     if (this.shuttingDown)
-      throw new JobError('dsh_unavailable', 'the worker manager is shutting down');
+      throw new JobError('worker_unavailable', 'the worker manager is shutting down');
     if (this.steering.has(input.job_id)) {
       throw new JobError('resume_unavailable', 'a steer is already in progress for this job');
     }
     this.steering.add(input.job_id);
     try {
       const original = await this.requireJob(input.job_id);
+      const engine = this.engineFor(original.backend ?? 'dsh');
+      if (!engine.supportsResume) {
+        throw new JobError(
+          'resume_unavailable',
+          `${original.backend} does not support steering yet`,
+        );
+      }
       let cancelled = false;
       if (!original.terminal) {
         try {
@@ -1032,7 +1092,7 @@ export class JobManager {
     const previous = job.alerts;
     const alerts = computeAlerts(job.fold.state, this.watchdogOptions(), {
       now: Date.now(),
-      costUsd: estimateCostUsd(job.provider, job.model, job.fold.state.usage),
+      costUsd: costOf(job),
       previous,
       activeSince: Date.parse(job.startedAt ?? job.createdAt),
     });
@@ -1142,10 +1202,11 @@ export class JobManager {
       reason: job.reason,
       session_id: job.sessionId,
       profile: job.profile,
+      backend: job.backend,
       provider: job.provider,
       model: job.model,
       usage: job.fold.state.usage,
-      cost_usd: estimateCostUsd(job.provider, job.model, job.fold.state.usage),
+      cost_usd: costOf(job),
       final: final === undefined ? undefined : final.slice(0, maxChars),
       final_truncated: final !== undefined && final.length > maxChars,
       final_path: final !== undefined ? job.finalPath : undefined,
@@ -1200,6 +1261,15 @@ export class JobManager {
   ): Promise<{ job_id: string; deleted: true; worktree: string; branch_deleted: boolean }> {
     const job = await this.requireJob(jobId);
     if (!job.terminal) throw new JobError('not_terminal', 'cannot delete a non-terminal job');
+    const busy = [...this.jobs.values()].find(
+      (other) => other.id !== job.id && !other.terminal && other.sessionDir === job.sessionDir,
+    );
+    if (busy) {
+      throw new JobError(
+        'session_busy',
+        `job ${busy.id} still uses session directory ${job.sessionDir}`,
+      );
+    }
     try {
       const result = await deleteJobRecord(this.config.stateDir, jobId, {
         discardChanges,
@@ -1278,6 +1348,7 @@ export class JobManager {
       job_id: job.id,
       label: job.label,
       profile: job.profile,
+      backend: job.backend,
       provider: job.provider,
       model: job.model,
       group_id: job.groupId,
@@ -1310,7 +1381,7 @@ export class JobManager {
         : undefined,
       malformed_lines: fold.malformedLines,
       usage: fold.usage,
-      cost_usd: estimateCostUsd(job.provider, job.model, fold.usage),
+      cost_usd: costOf(job),
       alerts: job.alerts,
     };
   }

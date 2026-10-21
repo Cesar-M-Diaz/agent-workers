@@ -1,5 +1,5 @@
 ---
-description: Start, stop, restart, or inspect the DSH workers dashboard
+description: Start, stop, restart, or inspect the workers dashboard
 argument-hint: "[start|stop|status|restart]"
 allowed-tools: Bash(node:*)
 ---

@@ -1,0 +1,11 @@
+{
+  "name": "dsh-workers",
+  "version": "0.3.7",
+  "description": "Compatibility notice. This plugin was renamed to agent-workers; install that plugin and remove this one.",
+  "author": {
+    "name": "Cesar-M-Diaz"
+  },
+  "homepage": "https://github.com/Cesar-M-Diaz/agent-workers",
+  "repository": "https://github.com/Cesar-M-Diaz/agent-workers",
+  "license": "MIT"
+}

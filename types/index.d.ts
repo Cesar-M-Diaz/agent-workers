@@ -1,7 +1,7 @@
 /**
- * The data contract for `dsh-workers`'s `$.state` values.
+ * The data contract for `agent-workers`'s `$.state` values.
  *
- * The atoms live in `PluginState['dsh-workers']` keyed by the plugin's
+ * The atoms live in `PluginState['agent-workers']` keyed by the plugin's
  * manifest name. All values are plain JSON data so they survive a hot reload.
  */
 
@@ -163,7 +163,7 @@ export type DshActionResults = Record<string, DshActionResult>
 
 declare module 'claude-code' {
   interface PluginState {
-    'dsh-workers': {
+    'agent-workers': {
       view: DshPaneView
       expanded: string[]
       finalExpanded: string[]

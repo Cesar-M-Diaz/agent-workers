@@ -26,7 +26,7 @@ export type FailureReason =
   | 'cwd_outside_roots'
   | 'write_conflict'
   | 'resume_unavailable'
-  | 'dsh_unavailable'
+  | 'worker_unavailable'
   | 'already_settled'
   | 'not_terminal'
   | 'worktree_error';
@@ -75,6 +75,7 @@ export interface JobSummary {
   job_id: string;
   label?: string;
   profile: string;
+  backend: 'dsh' | 'pi';
   provider?: string;
   model?: string;
   group_id: string;
@@ -106,6 +107,7 @@ export interface StartInput {
   task: string;
   label?: string;
   profile?: string;
+  backend?: 'dsh' | 'pi';
   group_id?: string;
   group_name?: string;
   cwd?: string;
@@ -114,7 +116,7 @@ export interface StartInput {
   base_ref?: string;
   timeout_s?: number;
   resume_job_id?: string;
-  /** Internal: set by dsh_steer, never accepted by the dsh_start tool schema. */
+  /** Internal: set by worker_steer, never accepted by the worker_start tool schema. */
   steered_from?: string;
 }
 
@@ -122,6 +124,7 @@ export interface StartResult {
   job_id: string;
   status: JobStatus;
   profile: string;
+  backend: 'dsh' | 'pi';
   provider?: string;
   model?: string;
   group_id: string;
@@ -133,7 +136,8 @@ export interface StartResult {
 
 export interface StatusOutput {
   server: {
-    dsh_version: string;
+    engine_version: string;
+    backend: 'dsh' | 'pi';
     max_concurrent: number;
     max_queue: number;
     running: number;

@@ -969,23 +969,27 @@ export type StateDirSources = {
   dedicated?: string | undefined
   xdgStateHome?: string | undefined
   home?: string | undefined
+  /** Resolve the pre-rename dsh-workers path instead of agent-workers. */
+  legacy?: boolean | undefined
 }
 
 /**
- * Resolve the DSH state directory, first match wins:
- * the `stateDir` option, `$DSH_WORKERS_STATE_DIR`, `$XDG_STATE_HOME/dsh-workers`,
- * `$HOME/.local/state/dsh-workers`.
+ * Resolve the worker state directory, first match wins:
+ * the `stateDir` option, `$AGENT_WORKERS_STATE_DIR` (or legacy
+ * `$DSH_WORKERS_STATE_DIR`), `$XDG_STATE_HOME/<name>`,
+ * `$HOME/.local/state/<name>`.
  */
 export function resolveStateDir(sources: StateDirSources): string {
   const option = nonEmptyText(sources.option)
   if (option !== undefined) return option
   const dedicated = nonEmptyText(sources.dedicated)
   if (dedicated !== undefined) return dedicated
+  const name = sources.legacy === true ? 'dsh-workers' : 'agent-workers'
   const xdg = nonEmptyText(sources.xdgStateHome)
-  if (xdg !== undefined) return joinPath(xdg, 'dsh-workers')
+  if (xdg !== undefined) return joinPath(xdg, name)
   const home = nonEmptyText(sources.home)
-  if (home !== undefined) return joinPath(home, '.local/state/dsh-workers')
-  return '.local/state/dsh-workers'
+  if (home !== undefined) return joinPath(home, `.local/state/${name}`)
+  return `.local/state/${name}`
 }
 
 /**

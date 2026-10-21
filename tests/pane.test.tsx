@@ -466,9 +466,15 @@ describe('jobs.ts', () => {
       resolveStateDir({ dedicated: '/env/state', xdgStateHome: '/xdg' }),
     ).toBe('/env/state')
     expect(resolveStateDir({ xdgStateHome: '/xdg' })).toBe(
-      '/xdg/dsh-workers',
+      '/xdg/agent-workers',
     )
     expect(resolveStateDir({ home: '/home/u' })).toBe(
+      '/home/u/.local/state/agent-workers',
+    )
+    expect(resolveStateDir({ xdgStateHome: '/xdg', legacy: true })).toBe(
+      '/xdg/dsh-workers',
+    )
+    expect(resolveStateDir({ home: '/home/u', legacy: true })).toBe(
       '/home/u/.local/state/dsh-workers',
     )
   })
@@ -479,7 +485,7 @@ describe('jobs.ts', () => {
 // ---------------------------------------------------------------------------
 
 const HOME = '/home/test'
-const STATE_DIR = `${HOME}/.local/state/dsh-workers`
+const STATE_DIR = `${HOME}/.local/state/agent-workers`
 const FIXED_NOW = Date.UTC(2026, 9, 20, 15, 7, 36)
 
 type FakeFile = { text: string; mtimeMs: number }
@@ -615,12 +621,12 @@ function installMocks(on: On, world: FakeWorld): Mocks {
     mcpReply: { content: [{ type: 'text', text: '{}' }], isError: false },
     connectReply: {
       isConnected: true,
-      server: 'plugin:dsh-workers:dsh-workers',
+      server: 'plugin:agent-workers:agent-workers',
     },
     tools: [],
   }
 
-  on('command.register', () => ({ value: { command: 'dsh-pane' } }))
+  on('command.register', () => ({ value: { command: 'pane' } }))
   on('ui.open', (_$, e) => {
     opens.push({ id: e.id, title: e.title, columns: e.columns })
     return { value: { isPlaced: true } }
@@ -644,12 +650,12 @@ function installMocks(on: On, world: FakeWorld): Mocks {
 }
 
 const PANE = {
-  plugin: 'dsh-workers',
+  plugin: 'agent-workers',
   component: 'Pane',
-  requestId: 'dsh-workers',
+  requestId: 'agent-workers',
   surface: 'terminal',
   props: {
-    title: 'DSH Workers',
+    title: 'Agent Workers',
     isFocused: false,
     bodyColumns: 58,
     placement: 'dock',
@@ -703,7 +709,7 @@ test('missing jobs dir shows the empty message and resolved path', async ($, on)
   await start($)
   const ui = await mountPane($)
 
-  expect(await ui.find({ type: 'Text', text: /No DSH jobs yet/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /No worker jobs yet/ })).toBeDefined()
   expect(await ui.find({ type: 'Text', text: world.stateDir })).toBeDefined()
   await ui.unmount()
 })
@@ -1226,7 +1232,7 @@ test('copy buttons call ui.copy with the press surface', async ($, on) => {
   await ui.unmount()
 })
 
-test('/dsh-pane calls ui.open', async ($, on) => {
+test('/pane calls ui.open', async ($, on) => {
   const world = createWorld()
   const { clock, opens } = installMocks(on, world)
 
@@ -1235,7 +1241,7 @@ test('/dsh-pane calls ui.open', async ($, on) => {
   const before = opens.length
 
   const result = await $.command.run({
-    command: 'dsh-pane',
+    command: 'pane',
     args: '',
     origin: { kind: 'composer' },
     presentation: { isFullscreen: true, columns: 120 },
@@ -1243,7 +1249,7 @@ test('/dsh-pane calls ui.open', async ($, on) => {
 
   expect(result).toEqual({})
   expect(opens.length).toBe(before + 1)
-  expect(opens.at(-1)?.id).toBe('dsh-workers')
+  expect(opens.at(-1)?.id).toBe('agent-workers')
   expect(opens.at(-1)?.columns).toBe(58)
 })
 
@@ -1275,7 +1281,7 @@ test('resolves a namespaced server through the connected tool list', async ($, o
   }
   mocks.tools = [
     {
-      name: 'mcp__plugin_dsh-workers_dsh-workers__dsh_delete',
+      name: 'mcp__plugin_agent-workers_agent-workers__worker_delete',
       description: 'Delete a worker',
       mcp: true,
     },
@@ -1288,7 +1294,7 @@ test('resolves a namespaced server through the connected tool list', async ($, o
   await ui.press({ key: 'delete:j_1' })
   await mocks.clock.settle()
 
-  expect(mocks.mcpCalls[0]?.server).toBe('plugin_dsh-workers_dsh-workers')
+  expect(mocks.mcpCalls[0]?.server).toBe('plugin_agent-workers_agent-workers')
   await ui.unmount()
 })
 
@@ -1315,7 +1321,7 @@ test('delete needs a second press and never calls on the first', async ($, on) =
   await mocks.clock.advance(1000)
   expect(mocks.mcpCalls).toHaveLength(1)
   expect(mocks.mcpCalls[0]).toMatchObject({
-    tool: 'dsh_delete',
+    tool: 'worker_delete',
     args: { job_id: 'j_1', discard_changes: false },
   })
   expect(await ui.find({ type: 'Text', text: 'deleted' })).toBeDefined()
@@ -1371,7 +1377,7 @@ test('cleanup cleans a terminal worktree and keeps the record', async ($, on) =>
   await ui.press({ key: 'cleanup:j_1' })
   await mocks.clock.settle()
   expect(mocks.mcpCalls[0]).toMatchObject({
-    tool: 'dsh_cleanup',
+    tool: 'worker_cleanup',
     args: { job_id: 'j_1', discard_changes: false },
   })
   expect(await ui.find({ type: 'Text', text: 'cleaned' })).toBeDefined()
@@ -1422,7 +1428,7 @@ test('a dirty delete offers discard & delete behind its own confirm', async ($, 
   await mocks.clock.settle()
   expect(mocks.mcpCalls).toHaveLength(2)
   expect(mocks.mcpCalls[1]).toMatchObject({
-    tool: 'dsh_delete',
+    tool: 'worker_delete',
     args: { job_id: 'j_1', discard_changes: true },
   })
   await ui.unmount()
@@ -1456,7 +1462,7 @@ test('a preserved dirty cleanup offers discard & clean', async ($, on) => {
   await ui.press({ key: 'discard-clean:j_1' })
   await mocks.clock.settle()
   expect(mocks.mcpCalls.at(-1)).toMatchObject({
-    tool: 'dsh_cleanup',
+    tool: 'worker_cleanup',
     args: { job_id: 'j_1', discard_changes: true },
   })
   await ui.unmount()

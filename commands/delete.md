@@ -1,13 +1,13 @@
 ---
-description: Delete a terminal DSH job and its files
+description: Delete a terminal job and its files
 argument-hint: <job_id> [discard_changes]
-allowed-tools: mcp__plugin_dsh-workers_dsh-workers__dsh_delete
+allowed-tools: mcp__plugin_agent-workers_agent-workers__worker_delete
 ---
-Delete this DSH job:
+Delete this job:
 
 $ARGUMENTS
 
-Call `dsh_delete` with the supplied job id. Keep `discard_changes` false unless
+Call `worker_delete` with the supplied job id. Keep `discard_changes` false unless
 the user explicitly confirmed discarding uncommitted worktree changes.
 
 If the tool returns `worktree_dirty`, explain that the worktree has changes and

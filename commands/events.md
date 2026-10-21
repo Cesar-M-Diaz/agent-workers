@@ -1,9 +1,9 @@
 ---
-description: Read live step events from a DSH worker
+description: Read live step events from a worker
 argument-hint: <job_id> [cursor]
-allowed-tools: mcp__plugin_dsh-workers_dsh-workers__dsh_events
+allowed-tools: mcp__plugin_agent-workers_agent-workers__worker_events
 ---
-Call the `dsh_events` MCP tool using the supplied or already-known job id.
+Call the `worker_events` MCP tool using the supplied or already-known job id.
 
 Arguments: $ARGUMENTS
 

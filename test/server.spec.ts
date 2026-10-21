@@ -92,7 +92,7 @@ describe('MCP server', () => {
   let rpc: RpcClient;
 
   beforeAll(async () => {
-    root = await mkdtemp(join(tmpdir(), 'dsh-workers-mcp-test-'));
+    root = await mkdtemp(join(tmpdir(), 'agent-workers-mcp-test-'));
     const repo = join(root, 'repo');
     await mkdir(repo);
     const fake = join(root, 'fake-dsh.mjs');
@@ -106,15 +106,15 @@ describe('MCP server', () => {
       env: {
         PATH: process.env.PATH,
         HOME: process.env.HOME,
-        DSH_WORKERS_DSH_BIN: fake,
-        DSH_WORKERS_ALLOWED_ROOTS: repo,
-        DSH_WORKERS_STATE_DIR: join(root, 'state'),
-        DSH_WORKERS_WORKTREE_ROOT: join(root, 'worktrees'),
-        DSH_WORKERS_DSH_HOME: join(root, 'dsh-home'),
-        DSH_WORKERS_MAX_CONCURRENT: '1',
-        DSH_WORKERS_MAX_QUEUE: '2',
-        DSH_WORKERS_MAX_DEPTH: '2',
-        DSH_WORKERS_USE_DSH_CREDENTIALS: '0',
+        AGENT_WORKERS_DSH_BIN: fake,
+        AGENT_WORKERS_ALLOWED_ROOTS: repo,
+        AGENT_WORKERS_STATE_DIR: join(root, 'state'),
+        AGENT_WORKERS_WORKTREE_ROOT: join(root, 'worktrees'),
+        AGENT_WORKERS_DSH_HOME: join(root, 'dsh-home'),
+        AGENT_WORKERS_MAX_CONCURRENT: '1',
+        AGENT_WORKERS_MAX_QUEUE: '2',
+        AGENT_WORKERS_MAX_DEPTH: '2',
+        AGENT_WORKERS_USE_DSH_CREDENTIALS: '0',
       },
       stdio: ['pipe', 'pipe', 'pipe'],
     });
@@ -151,20 +151,20 @@ describe('MCP server', () => {
     }>;
     const names = listed.map((tool) => tool.name).sort();
     expect(names).toEqual([
-      'dsh_cancel',
-      'dsh_cleanup',
-      'dsh_delete',
-      'dsh_events',
-      'dsh_group',
-      'dsh_profile',
-      'dsh_result',
-      'dsh_start',
-      'dsh_status',
-      'dsh_steer',
-      'dsh_wait',
+      'worker_cancel',
+      'worker_cleanup',
+      'worker_delete',
+      'worker_events',
+      'worker_group',
+      'worker_profile',
+      'worker_result',
+      'worker_start',
+      'worker_status',
+      'worker_steer',
+      'worker_wait',
     ]);
 
-    const steer = listed.find((tool) => tool.name === 'dsh_steer');
+    const steer = listed.find((tool) => tool.name === 'worker_steer');
     expect(steer?.inputSchema?.required).toEqual(expect.arrayContaining(['job_id', 'message']));
     expect(Object.keys(steer?.inputSchema?.properties ?? {}).sort()).toEqual([
       'job_id',
@@ -174,7 +174,7 @@ describe('MCP server', () => {
     expect(steer?.inputSchema?.additionalProperties).toBe(false);
 
     const profile = await rpc.request('tools/call', {
-      name: 'dsh_profile',
+      name: 'worker_profile',
       arguments: {},
     });
     const profilePayload = toolPayload(profile) as { profile: string; profiles: string[] };
@@ -186,7 +186,7 @@ describe('MCP server', () => {
     ]);
 
     const started = await rpc.request('tools/call', {
-      name: 'dsh_start',
+      name: 'worker_start',
       arguments: { task: 'hello', group_id: 'g_test', group_name: 'Test group' },
     });
     const startPayload = toolPayload(started) as {
@@ -201,21 +201,21 @@ describe('MCP server', () => {
     expect(startPayload.group_name).toBe('Test group');
 
     const waited = await rpc.request('tools/call', {
-      name: 'dsh_wait',
+      name: 'worker_wait',
       arguments: { job_ids: [startPayload.job_id], mode: 'all', timeout_s: 5 },
     });
     const waitPayload = toolPayload(waited) as { jobs: Array<{ status: string }> };
     expect(waitPayload.jobs[0]?.status).toBe('succeeded');
 
     const result = await rpc.request('tools/call', {
-      name: 'dsh_result',
+      name: 'worker_result',
       arguments: { job_id: startPayload.job_id },
     });
     const resultPayload = toolPayload(result) as { final: string };
     expect(resultPayload.final).toBe('MCP OK hello');
 
     const events = await rpc.request('tools/call', {
-      name: 'dsh_events',
+      name: 'worker_events',
       arguments: { job_id: startPayload.job_id, cursor: 0, limit: 10 },
     });
     const eventPayload = toolPayload(events) as {
@@ -226,13 +226,13 @@ describe('MCP server', () => {
     expect(eventPayload.next_cursor).toBe(3);
 
     const group = await rpc.request('tools/call', {
-      name: 'dsh_group',
+      name: 'worker_group',
       arguments: { group_id: 'g_next', group_name: 'Next group' },
     });
     expect(toolPayload(group)).toMatchObject({ group_id: 'g_next', group_name: 'Next group' });
 
     const deleted = await rpc.request('tools/call', {
-      name: 'dsh_delete',
+      name: 'worker_delete',
       arguments: { job_id: startPayload.job_id },
     });
     expect(toolPayload(deleted)).toMatchObject({ job_id: startPayload.job_id, deleted: true });

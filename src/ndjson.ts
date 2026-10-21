@@ -27,6 +27,8 @@ export interface FoldedRun {
   lastTool?: string;
   lastEventAt?: number;
   usage?: Usage;
+  /** Exact cost reported by the engine, when it provides one. */
+  costUsd?: number;
   recentToolCalls: FoldedToolCall[];
   recentToolResults: string[];
 }

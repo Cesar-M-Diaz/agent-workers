@@ -1,8 +1,8 @@
 ---
-name: dsh-parallel
+name: parallel
 description: >
-  Delegate independent, well-specified coding or investigation tasks to DeepSeek
-  Harness (DSH) workers running in parallel through the dsh-workers MCP server,
+  Delegate independent, well-specified coding or investigation tasks to dsh or pi
+  workers running in parallel through the agent-workers MCP server,
   verify their output, and delete or clean every finished worktree in the same
   turn. Use when there are two or more separable tasks, a large read-only sweep,
   a bounded mechanical change in an isolated worktree, or an independent second
@@ -10,36 +10,39 @@ description: >
   this conversation.
 ---
 
-# DSH parallel workers
+# Parallel workers
 
-The `dsh-workers` MCP server exposes eleven tools:
+The `agent-workers` MCP server exposes eleven tools:
 
-- `dsh_start`: start a worker and return a job id immediately; accepts `group_id`, `group_name`, and an optional `profile`.
-- `dsh_group`: read or set the parent-session group used by new jobs.
-- `dsh_profile`: read or switch the DSH profile for this MCP session.
-- `dsh_status`: inspect running and queued jobs.
-- `dsh_wait`: wait for any or all jobs, with a bounded timeout.
-- `dsh_result`: read the final answer, stderr tail, and worktree diff.
-- `dsh_events`: read live NDJSON events from a cursor (`next_cursor`).
-- `dsh_cancel`: cancel a queued or running job.
-- `dsh_steer`: cancel (when active) and resume the same DSH session with a corrective message.
-- `dsh_cleanup`: remove a finished worktree and branch without deleting the job record.
-- `dsh_delete`: delete a terminal job record, logs, and a clean worktree/branch.
+- `worker_start`: start a worker and return a job id immediately; accepts `group_id`, `group_name`, and an optional `profile`.
+- `worker_group`: read or set the parent-session group used by new jobs.
+- `worker_profile`: read or switch the backend profile for this MCP session.
+- `worker_status`: inspect running and queued jobs.
+- `worker_wait`: wait for any or all jobs, with a bounded timeout.
+- `worker_result`: read the final answer, stderr tail, and worktree diff.
+- `worker_events`: read live NDJSON events from a cursor (`next_cursor`).
+- `worker_cancel`: cancel a queued or running job.
+- `worker_steer`: cancel (when active) and resume the same session with a corrective message.
+- `worker_cleanup`: remove a finished worktree and branch without deleting the job record.
+- `worker_delete`: delete a terminal job record, logs, and a clean worktree/branch.
 
-Profiles live under `$DSH_WORKERS_DSH_HOME/profiles`. The available profiles are
-`work-openrouter`, `personal-deepseek` and `personal-opencode`. Use `dsh_profile`
-when the user says this session is work or personal; it affects new workers in
-this MCP session. Pass `profile` to `dsh_start` only for a one-off override.
-Existing jobs keep the profile they started with. `dsh_status` includes the
-input/output/cache token breakdown and estimated USD cost per job.
+dsh profiles live under `$AGENT_WORKERS_DSH_HOME/profiles`; pi profiles are
+`default`, a model pattern such as
+`openrouter/deepseek/deepseek-v4.1-flash-1017:low`, or a key in
+`<state>/pi-profiles.json`. Use `worker_profile` when the user says this session
+is work or personal; it affects new workers in this MCP session. Pass `profile`
+to `worker_start` only for a one-off override. Existing jobs keep the profile
+they started with. `worker_status` includes the input/output/cache token
+breakdown and calculated USD cost per job.
 
-A worker is a separate DSH agent. It does not see this conversation, the parent
-chat history, or files you read but did not mention. Every task must be
-self-contained.
+A worker is a separate dsh or pi process. It does not see this conversation, the
+parent chat history, or files you read but did not mention. Every task must be
+self-contained. pi workers are read-only unless the operator enabled
+`pi_allow_write`; never assume a pi worker can edit files.
 
 If the tools are unavailable, say so and continue normally. Do not emulate the
-tools by spawning `dsh` from Bash unless the user explicitly asks for that
-fallback.
+tools by spawning `dsh` or `pi` from Bash unless the user explicitly asks for
+that fallback.
 
 ## When to delegate
 
@@ -50,7 +53,7 @@ Use this skill when:
   summarize several docs, or inspect independent packages.
 - A bounded mechanical change can be made in an isolated git worktree.
 - An independent diagnosis or second implementation would improve confidence.
-- The user explicitly asks to use DSH workers.
+- The user explicitly asks to use workers.
 
 Do not delegate when:
 
@@ -102,38 +105,38 @@ Final response:
 ## Session grouping and ids
 
 Jobs are grouped in the dashboard by `group_id` and `group_name`. Treat these as
-the parent Claude session, not as the DSH worker session id.
+the parent Claude session, not as the worker session id.
 
 Before the first delegation in a conversation:
 
-1. Call `dsh_group` with no arguments to read the current default group.
+1. Call `worker_group` with no arguments to read the current default group.
 2. If `group_name` is generic (for example, just a repository name) or does not
-   describe the current work, call `dsh_group` with a concise 3-6 word
+   describe the current work, call `worker_group` with a concise 3-6 word
    `group_name`. Reuse the returned `group_id` and `group_name`.
-3. Always pass both `group_id` and `group_name` to every `dsh_start`, including
+3. Always pass both `group_id` and `group_name` to every `worker_start`, including
    jobs in later turns of the same conversation.
 4. If the user explicitly provides a session/group id or name, use those values.
 
-Keep every returned `job_id` and pass it automatically to `dsh_status`,
-`dsh_wait`, `dsh_result`, `dsh_events`, `dsh_steer`, `dsh_cancel`, `dsh_cleanup`,
-and `dsh_delete`. Do not ask the user to repeat or type ids that the conversation
+Keep every returned `job_id` and pass it automatically to `worker_status`,
+`worker_wait`, `worker_result`, `worker_events`, `worker_steer`, `worker_cancel`, `worker_cleanup`,
+and `worker_delete`. Do not ask the user to repeat or type ids that the conversation
 already contains.
 
 ## Parallel workflow
 
 1. Split the request into independent jobs with non-overlapping ownership.
-2. Read or set the session group with `dsh_group`, then call `dsh_start` once per
+2. Read or set the session group with `worker_group`, then call `worker_start` once per
    job, always passing the same `group_id` and `group_name`. Use a short `label`.
 3. Use `read-only` unless the job must write files.
 4. For writing jobs, use `access: "workspace-write"` with
    `isolation: "worktree"`.
 5. Continue useful parent work instead of busy-polling.
-6. Call `dsh_wait` with the returned job ids, `mode: "any"` or `"all"`, and a
+6. Call `worker_wait` with the returned job ids, `mode: "any"` or `"all"`, and a
    moderate timeout. A wait timeout does not cancel jobs.
-7. Call `dsh_result` for each settled job using its job id.
+7. Call `worker_result` for each settled job using its job id.
 8. Verify the result before reporting it.
 9. Clean up in the same turn. Once the diff has been applied, merged, or
-   rejected, call `dsh_delete` for the job (or `dsh_cleanup` when the user wants
+   rejected, call `worker_delete` for the job (or `worker_cleanup` when the user wants
    to keep the record). Do not leave a finished worktree behind.
 
 Start a small batch first. The server enforces its own concurrency and queue
@@ -141,38 +144,38 @@ limits, so do not try to bypass them.
 
 ## Live visibility
 
-Use `dsh_status` for a compact progress snapshot and `dsh_events` while a worker
+Use `worker_status` for a compact progress snapshot and `worker_events` while a worker
 is running to read its tool calls, text, thinking, and status events. Keep the
 returned `next_cursor` and pass it to the next call instead of rereading the
 whole stream.
 
-The server also runs pure watchdog heuristics. `dsh_status`, `dsh_wait`,
-`dsh_group` and the dashboard expose each job's current `alerts`:
+The server also runs pure watchdog heuristics. `worker_status`, `worker_wait`,
+`worker_group` and the dashboard expose each job's current `alerts`:
 `stalled` (no events), `loop` (the same tool call repeated), `tool_errors`
 (repeated failed tool results), and `budget` (steps or estimated cost above a
 configured limit). Alerts are warn-only by default; the operator can set
-`DSH_WORKERS_WATCHDOG_ACTION=cancel` to stop budget-exceeding jobs.
+`AGENT_WORKERS_WATCHDOG_ACTION=cancel` to stop budget-exceeding jobs.
 
-`dsh_wait` returns early with `alerted: [job_id ...]` when a watched job gains a
+`worker_wait` returns early with `alerted: [job_id ...]` when a watched job gains a
 new alert kind it did not have when the wait began. Before steering, inspect the
-job with `dsh_events` (using its `next_cursor`) and `dsh_status` to understand
+job with `worker_events` (using its `next_cursor`) and `worker_status` to understand
 what it is actually doing. Do not steer on a single weak signal, and never steer
 a healthy job just to chat.
 
 Do not claim these workers appear in Claude's native subagent panel or the DSH
-TUI side panel. They are separate DSH headless processes. To inspect them
-visually, use `/dsh-workers:dsh-ui` (the `dsh-ui` command), which opens the
-standalone `dsh-workers` dashboard, or `/dsh-workers:dsh-watch <job_id>` to
+TUI side panel. They are separate dsh or pi processes. To inspect them
+visually, use `/agent-workers:ui` (the `dsh-ui` command), which opens the
+standalone `agent-workers` dashboard, or `/agent-workers:watch <job_id>` to
 focus one job. The pane shows the same jobs beside the conversation; its
 expanded terminal cards have `cleanup` and `delete` buttons with a confirming
 second press.
 
 ## Steering
 
-Use `dsh_steer` when a worker is off task, made a wrong assumption, or needs a
+Use `worker_steer` when a worker is off task, made a wrong assumption, or needs a
 corrective instruction that must build on its current session and working
 directory. For an active job the server cancels it, waits for it to settle, and
-resumes the same DSH session with your message. For a terminal job it skips the
+resumes the same session with your message. For a terminal job it skips the
 cancel and starts a follow-up in that session.
 
 The steered worker does not see this conversation. The message must be
@@ -181,21 +184,21 @@ the constraints. The resumed job inherits the original group, access, cwd,
 worktree, profile and timeout; it gets a new `job_id` and a `↻` label, and the
 original stays available as a `cancelled`/`steered` record.
 
-A job cancelled before DSH emitted a session id cannot be resumed; `dsh_steer`
+A job cancelled before the backend emitted a session id cannot be resumed; `worker_steer`
 returns `resume_unavailable` and leaves the original record intact.
 
 ## Lifecycle and cleanup (mandatory)
 
 Cleaning up is part of finishing a delegation, not an optional epilogue. After
 reviewing a job's result and its diff, and once that diff has been applied to
-the user's tree, merged, or rejected, call `dsh_delete` (or `dsh_cleanup` to
+the user's tree, merged, or rejected, call `worker_delete` (or `worker_cleanup` to
 keep the job record) **in the same turn**. Do not leave finished worktrees
 behind and do not defer cleanup to a later turn or to the user.
 
-- `dsh_delete` removes the terminal record, logs, and a clean worktree/branch.
+- `worker_delete` removes the terminal record, logs, and a clean worktree/branch.
   Use it when the work is integrated or rejected and the record is no longer
   needed.
-- `dsh_cleanup` removes the worktree and branch but keeps the job record. Use it
+- `worker_cleanup` removes the worktree and branch but keeps the job record. Use it
   when the user wants history or auditability.
 - If the tool reports `worktree_dirty` or `preserved_dirty` and the worktree's
   changes were **not** applied anywhere, ask the user before retrying with
@@ -205,8 +208,8 @@ behind and do not defer cleanup to a later turn or to the user.
 - The pane's expanded terminal card exposes `cleanup` and `delete` buttons; both
   need a second confirming press, and a dirty worktree adds `discard & clean` /
   `discard & delete`. For manual use, run `/dsh-cleanup <job_id>` or
-  `/dsh-delete <job_id>` (namespaced as `/dsh-workers:dsh-cleanup` and
-  `/dsh-workers:dsh-delete`).
+  `/dsh-delete <job_id>` (namespaced as `/agent-workers:cleanup` and
+  `/agent-workers:delete`).
 
 Terminal job records are retained for seven days by default and then removed by
 the background retention sweep. Automatic retention never deletes a dirty
@@ -249,7 +252,7 @@ Cancel only when:
 - the job is clearly outside the requested scope;
 - the job is stuck past a reasonable wall-clock budget.
 
-Tell the user before or when you cancel. Use `dsh_cancel`, not an ad-hoc `kill`.
+Tell the user before or when you cancel. Use `worker_cancel`, not an ad-hoc `kill`.
 
 ## Reporting
 

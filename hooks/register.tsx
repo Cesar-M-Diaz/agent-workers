@@ -67,7 +67,7 @@ import {
   type JobCacheEntry,
 } from './jobs'
 
-const PANE_ID = 'dsh-workers'
+const PANE_ID = 'agent-workers'
 const REFRESH_MS = 1000
 const PANE_COLUMNS = 58
 
@@ -82,29 +82,29 @@ const EMPTY_VIEW: DshPaneView = {
 
 // $.state survives a hot reload; module variables below do not. The cache is
 // only an optimization, so losing it and re-reading on a reload is harmless.
-const viewRef = { plugin: 'dsh-workers', key: 'view' } as const
+const viewRef = { plugin: 'agent-workers', key: 'view' } as const
 const viewAtom = atom(viewRef, EMPTY_VIEW)
 const expandedAtom = atom(
-  { plugin: 'dsh-workers', key: 'expanded' } as const,
+  { plugin: 'agent-workers', key: 'expanded' } as const,
   [] as string[],
 )
 const finalExpandedAtom = atom(
-  { plugin: 'dsh-workers', key: 'finalExpanded' } as const,
+  { plugin: 'agent-workers', key: 'finalExpanded' } as const,
   [] as string[],
 )
 const showAllAtom = atom(
-  { plugin: 'dsh-workers', key: 'showAll' } as const,
+  { plugin: 'agent-workers', key: 'showAll' } as const,
   false,
 )
-const pendingRef = { plugin: 'dsh-workers', key: 'pendingAction' } as const
+const pendingRef = { plugin: 'agent-workers', key: 'pendingAction' } as const
 const pendingActionAtom = atom(pendingRef, null as DshPendingAction | null)
 const actionResultsRef = {
-  plugin: 'dsh-workers',
+  plugin: 'agent-workers',
   key: 'actionResults',
 } as const
 const actionResultsAtom = atom(actionResultsRef, {} as DshActionResults)
 
-const PLUGIN_SERVER = 'dsh-workers'
+const PLUGIN_SERVER = 'agent-workers'
 const CONFIRM_MS = 5000
 const ACTION_TEXT_MAX = 120
 
@@ -124,10 +124,10 @@ function serverCandidates(): string[] {
   ]
 }
 
-/** `mcp__plugin_dsh-workers_dsh-workers__dsh_delete` → the server segment. */
+/** `mcp__plugin_agent-workers_agent-workers__worker_delete` → the server segment. */
 function serverFromToolName(name: string): string | undefined {
   if (!name.startsWith('mcp__')) return undefined
-  const end = name.lastIndexOf('__dsh_')
+  const end = name.lastIndexOf('__worker_')
   if (end <= 'mcp__'.length) return undefined
   return name.slice('mcp__'.length, end)
 }
@@ -155,9 +155,9 @@ async function resolveMcpServer($: EngineInterface): Promise<string | undefined>
     for (const tool of tools) {
       if (!tool.mcp) continue
       if (
-        !tool.name.endsWith('__dsh_delete') &&
-        !tool.name.endsWith('__dsh_cleanup') &&
-        !tool.name.endsWith('__dsh_status')
+        !tool.name.endsWith('__worker_delete') &&
+        !tool.name.endsWith('__worker_cleanup') &&
+        !tool.name.endsWith('__worker_status')
       ) {
         continue
       }
@@ -194,7 +194,7 @@ async function callDshTool(
       lastError = error
     }
   }
-  throw lastError ?? new Error('dsh-workers MCP server is not connected')
+  throw lastError ?? new Error('agent-workers MCP server is not connected')
 }
 
 type ParsedToolResult = {
@@ -290,7 +290,7 @@ async function runAction(
   action: DshActionKind,
   discardChanges: boolean,
 ): Promise<void> {
-  const tool = action === 'delete' ? 'dsh_delete' : 'dsh_cleanup'
+  const tool = action === 'delete' ? 'worker_delete' : 'worker_cleanup'
   let outcome: ActionOutcome
   try {
     const result = await callDshTool($, tool, {
@@ -356,12 +356,24 @@ async function resolveStateDirFor(
   $: EngineInterface,
   options: PluginOptions,
 ): Promise<string> {
-  return resolveStateDir({
-    option: typeof options.state_dir === 'string' ? options.state_dir : undefined,
-    dedicated: await $.env.get('DSH_WORKERS_STATE_DIR'),
-    xdgStateHome: await $.env.get('XDG_STATE_HOME'),
-    home: await $.env.get('HOME'),
-  })
+  const rawOption = typeof options.state_dir === 'string' ? options.state_dir : undefined
+  const option = rawOption?.trim() ? rawOption.trim() : undefined
+  const rawDedicated =
+    (await $.env.get('AGENT_WORKERS_STATE_DIR')) ??
+    (await $.env.get('DSH_WORKERS_STATE_DIR'))
+  const dedicated = rawDedicated?.trim() ? rawDedicated.trim() : undefined
+  const xdgStateHome = await $.env.get('XDG_STATE_HOME')
+  const home = await $.env.get('HOME')
+
+  if (option !== undefined || dedicated !== undefined) {
+    return resolveStateDir({ option, dedicated, xdgStateHome, home })
+  }
+
+  const legacy = resolveStateDir({ xdgStateHome, home, legacy: true })
+  if (await pathExists($, legacy)) return legacy
+  const current = resolveStateDir({ xdgStateHome, home })
+  if (await pathExists($, current)) return current
+  return current
 }
 
 async function projectCwd($: EngineInterface): Promise<string> {
@@ -629,8 +641,8 @@ export const register: Register = (on, options) => {
     startCwd = e.cwd
 
     await $.command.register({
-      name: 'dsh-pane',
-      description: 'Show DSH workers in a pane',
+      name: 'pane',
+      description: 'Show Agent Workers in a pane',
       immediate: true,
     })
 
@@ -647,14 +659,14 @@ export const register: Register = (on, options) => {
       void refresh($, options).catch(() => undefined)
     })
     void $.ui
-      .open({ id: PANE_ID, title: 'DSH Workers', columns: PANE_COLUMNS })
+      .open({ id: PANE_ID, title: 'Agent Workers', columns: PANE_COLUMNS })
       .catch(() => undefined)
 
     return next(e)
   })
 
-  on('command.run', { command: 'dsh-pane' }, async $ => {
-    await $.ui.open({ id: PANE_ID, title: 'DSH Workers', columns: PANE_COLUMNS })
+  on('command.run', { command: 'pane' }, async $ => {
+    await $.ui.open({ id: PANE_ID, title: 'Agent Workers', columns: PANE_COLUMNS })
     return {}
   })
 
@@ -1419,7 +1431,7 @@ export const register: Register = (on, options) => {
     }
 
     const scope = showAll ? 'all' : 'this project'
-    const title = truncateLine('DSH Workers', Math.max(1, columns))
+    const title = truncateLine('Agent Workers', Math.max(1, columns))
     const scopeWidth = Math.max(1, columns - title.length - 1)
     const footer = (
       <Box key="footer" flexDirection="column" marginTop={1}>
@@ -1466,10 +1478,10 @@ export const register: Register = (on, options) => {
         {totals.length > 0 && line('totals', joinParts(totals), columns)}
 
         {!view.isLoaded && (
-          <Text dimColor>{truncateLine('Loading DSH jobs…', columns)}</Text>
+          <Text dimColor>{truncateLine('Loading worker jobs…', columns)}</Text>
         )}
         {view.isLoaded && view.jobs.length === 0 && (
-          <Text dimColor>{truncateLine('No DSH jobs yet', columns)}</Text>
+          <Text dimColor>{truncateLine('No worker jobs yet', columns)}</Text>
         )}
         {view.isLoaded && view.jobs.length === 0 && view.stateDir !== '' && (
           <Text dimColor>{truncateLine(view.stateDir, columns)}</Text>

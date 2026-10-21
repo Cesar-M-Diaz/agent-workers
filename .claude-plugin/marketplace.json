@@ -1,14 +1,19 @@
 {
-  "name": "dsh-workers",
-  "description": "DeepSeek Harness parallel workers: MCP server, skill, commands, and live pane.",
+  "name": "agent-workers",
+  "description": "DeepSeek Harness and pi parallel workers: MCP server, skill, commands, and live pane.",
   "owner": {
     "name": "Cesar-M-Diaz"
   },
   "plugins": [
     {
-      "name": "dsh-workers",
+      "name": "agent-workers",
       "source": "./",
-      "description": "Run DeepSeek Harness (dsh) headless workers in parallel, with a live dashboard, a cleanup-aware skill, slash commands, and a native pane."
+      "description": "Run DeepSeek Harness (dsh) or pi headless workers in parallel, with a live dashboard, a cleanup-aware skill, slash commands, and a native pane."
+    },
+    {
+      "name": "dsh-workers",
+      "source": "./legacy/dsh-workers",
+      "description": "Compatibility notice for the renamed agent-workers plugin."
     }
   ]
 }

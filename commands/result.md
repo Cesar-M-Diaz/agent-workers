@@ -1,9 +1,9 @@
 ---
-description: Read the result, diff, and tails from a DSH worker
+description: Read the result, diff, and tails from a worker
 argument-hint: <job_id> [include_diff]
-allowed-tools: mcp__plugin_dsh-workers_dsh-workers__dsh_result
+allowed-tools: mcp__plugin_agent-workers_agent-workers__worker_result
 ---
-Call the `dsh_result` MCP tool for the supplied or already-known job id:
+Call the `worker_result` MCP tool for the supplied or already-known job id:
 
 $ARGUMENTS
 
