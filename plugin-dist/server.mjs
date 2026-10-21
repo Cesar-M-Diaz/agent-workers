@@ -36714,14 +36714,13 @@ async function loadConfig() {
     ...splitList(process.env.DSH_WORKERS_ENV_ALLOW)
   ];
   const piAgentDir = pathEnv("DSH_WORKERS_PI_AGENT_DIR");
+  const piProfilesFile = process.env.DSH_WORKERS_PI_PROFILES_FILE?.trim();
   return {
     backend: enumEnv("DSH_WORKERS_BACKEND", "dsh", ["dsh", "pi"]),
     dshBin: process.env.DSH_WORKERS_DSH_BIN ? resolve2(expandHome(process.env.DSH_WORKERS_DSH_BIN)) : "dsh",
     piBin: process.env.DSH_WORKERS_PI_BIN ? resolve2(expandHome(process.env.DSH_WORKERS_PI_BIN)) : "pi",
     piDefaultProfile: process.env.DSH_WORKERS_PI_PROFILE?.trim() || "default",
-    piProfilesFile: resolve2(
-      expandHome(process.env.DSH_WORKERS_PI_PROFILES_FILE ?? join(stateDir, "pi-profiles.json"))
-    ),
+    piProfilesFile: resolve2(expandHome(piProfilesFile || join(stateDir, "pi-profiles.json"))),
     piModel: process.env.DSH_WORKERS_PI_MODEL?.trim() || "",
     piThinking: process.env.DSH_WORKERS_PI_THINKING?.trim() || "",
     piAgentDir: piAgentDir ? resolve2(expandHome(piAgentDir)) : "",

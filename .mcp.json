@@ -6,7 +6,13 @@
       "args": ["${CLAUDE_PLUGIN_ROOT}/plugin-dist/server.mjs"],
       "env": {
         "DSH_WORKERS_ALLOWED_ROOTS": "${user_config.allowed_roots}",
+        "DSH_WORKERS_BACKEND": "${user_config.backend}",
         "DSH_WORKERS_DSH_BIN": "${user_config.dsh_bin}",
+        "DSH_WORKERS_PI_BIN": "${user_config.pi_bin}",
+        "DSH_WORKERS_PI_MODEL": "${user_config.pi_model}",
+        "DSH_WORKERS_PI_THINKING": "${user_config.pi_thinking}",
+        "DSH_WORKERS_PI_AGENT_DIR": "${user_config.pi_agent_dir}",
+        "DSH_WORKERS_PI_PROFILES_FILE": "${user_config.pi_profiles_file}",
         "DSH_WORKERS_USE_DSH_CREDENTIALS": "${user_config.use_dsh_credentials}",
         "DSH_WORKERS_STATE_DIR": "${user_config.state_dir}",
         "DSH_WORKERS_MAX_CONCURRENT": "${user_config.max_concurrent}",

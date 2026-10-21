@@ -179,6 +179,7 @@ export async function loadConfig(): Promise<Config> {
   ];
 
   const piAgentDir = pathEnv('DSH_WORKERS_PI_AGENT_DIR');
+  const piProfilesFile = process.env.DSH_WORKERS_PI_PROFILES_FILE?.trim();
   return {
     backend: enumEnv<'dsh' | 'pi'>('DSH_WORKERS_BACKEND', 'dsh', ['dsh', 'pi']),
     dshBin: process.env.DSH_WORKERS_DSH_BIN
@@ -188,9 +189,7 @@ export async function loadConfig(): Promise<Config> {
       ? resolve(expandHome(process.env.DSH_WORKERS_PI_BIN))
       : 'pi',
     piDefaultProfile: process.env.DSH_WORKERS_PI_PROFILE?.trim() || 'default',
-    piProfilesFile: resolve(
-      expandHome(process.env.DSH_WORKERS_PI_PROFILES_FILE ?? join(stateDir, 'pi-profiles.json')),
-    ),
+    piProfilesFile: resolve(expandHome(piProfilesFile || join(stateDir, 'pi-profiles.json'))),
     piModel: process.env.DSH_WORKERS_PI_MODEL?.trim() || '',
     piThinking: process.env.DSH_WORKERS_PI_THINKING?.trim() || '',
     piAgentDir: piAgentDir ? resolve(expandHome(piAgentDir)) : '',

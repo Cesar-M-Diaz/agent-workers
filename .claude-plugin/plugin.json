@@ -1,14 +1,14 @@
 {
   "name": "dsh-workers",
   "version": "0.3.6",
-  "description": "Run DeepSeek Harness (dsh) headless workers in parallel, with a live dashboard, a cleanup-aware skill, slash commands, and a native pane.",
+  "description": "Run DeepSeek Harness (dsh) or pi headless workers in parallel, with a live dashboard, a cleanup-aware skill, slash commands, and a native pane.",
   "author": {
     "name": "Cesar-M-Diaz"
   },
   "homepage": "https://github.com/Cesar-M-Diaz/dsh-workers",
   "repository": "https://github.com/Cesar-M-Diaz/dsh-workers",
   "license": "MIT",
-  "keywords": ["dsh", "deepseek", "workers", "parallel", "mcp", "dashboard"],
+  "keywords": ["dsh", "deepseek", "pi", "workers", "parallel", "mcp", "dashboard"],
   "types": "./types/index.d.ts",
   "userConfig": {
     "allowed_roots": {
@@ -18,10 +18,52 @@
       "required": false,
       "default": ""
     },
+    "backend": {
+      "type": "string",
+      "title": "Worker backend",
+      "description": "dsh or pi. Empty uses dsh.",
+      "required": false,
+      "default": "dsh"
+    },
     "dsh_bin": {
       "type": "string",
       "title": "dsh binary",
       "description": "Absolute path to the dsh executable. Empty uses dsh from PATH.",
+      "required": false,
+      "default": ""
+    },
+    "pi_bin": {
+      "type": "string",
+      "title": "pi binary",
+      "description": "Absolute path to the pi executable. Empty uses pi from PATH.",
+      "required": false,
+      "default": ""
+    },
+    "pi_model": {
+      "type": "string",
+      "title": "Default pi model",
+      "description": "Model for the pi default profile, e.g. openrouter/deepseek/deepseek-v4.1-flash-1017:low. Empty uses pi's configured model.",
+      "required": false,
+      "default": ""
+    },
+    "pi_thinking": {
+      "type": "string",
+      "title": "Default pi thinking level",
+      "description": "off, minimal, low, medium, high, xhigh, or max. Empty uses pi's configured level.",
+      "required": false,
+      "default": ""
+    },
+    "pi_agent_dir": {
+      "type": "string",
+      "title": "pi agent directory",
+      "description": "Optional PI_CODING_AGENT_DIR for worker processes. Empty inherits the user's pi configuration and auth.",
+      "required": false,
+      "default": ""
+    },
+    "pi_profiles_file": {
+      "type": "string",
+      "title": "pi profiles file",
+      "description": "Optional JSON file with named pi profiles. Empty uses <state_dir>/pi-profiles.json.",
       "required": false,
       "default": ""
     },
@@ -42,7 +84,7 @@
     "max_concurrent": {
       "type": "number",
       "title": "Maximum concurrent workers",
-      "description": "Hard limit on running dsh processes (1 to 8).",
+      "description": "Hard limit on running worker processes (1 to 8).",
       "required": false,
       "default": 3,
       "min": 1,
@@ -50,8 +92,8 @@
     },
     "profile": {
       "type": "string",
-      "title": "Starting DSH profile",
-      "description": "Profile for new workers. Empty uses work-openrouter, falling back to headless.",
+      "title": "Starting backend profile",
+      "description": "dsh profile name, pi model pattern, or named pi profile. Empty uses the backend default.",
       "required": false,
       "default": ""
     },
