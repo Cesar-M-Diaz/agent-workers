@@ -163,8 +163,10 @@ what it is actually doing. Do not steer on a single weak signal, and never steer
 a healthy job just to chat.
 
 Do not claim these workers appear in Claude's native subagent panel or the DSH
-TUI side panel. They are separate dsh or pi processes. To inspect them
-visually, use `/agent-workers:ui` (the `dsh-ui` command), which opens the
+TUI native subagent panel. They are separate dsh or pi processes. If the user
+installed the optional dsh-tui panel (`integrations/dsh-tui`), they also show in
+its "Agent Workers" side panel. To inspect them visually, use
+`/agent-workers:ui` (the `ui` command), which opens the
 standalone `agent-workers` dashboard, or `/agent-workers:watch <job_id>` to
 focus one job. The pane shows the same jobs beside the conversation; its
 expanded terminal cards have `cleanup` and `delete` buttons with a confirming

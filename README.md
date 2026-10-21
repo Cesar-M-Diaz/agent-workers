@@ -24,7 +24,9 @@ Claude Code plugin "agent-workers"
 ```
 
 These workers are separate dsh or pi processes. They are not Claude `Task` calls
-and do not appear in the DSH TUI native subagent side panel.
+and do not appear in the DSH TUI native subagent side panel. The optional
+[dsh-tui panel](integrations/dsh-tui/README.md) lists them in an "Agent Workers"
+plugin panel instead.
 
 ## Backends
 
@@ -258,8 +260,9 @@ provider/model metadata. Terminal jobs can be deleted from the job header. A
 dirty worktree requires a second confirmation before its changes are discarded.
 Cancellation remains an MCP operation.
 
-The dashboard is not the DSH TUI side panel. The TUI side panel belongs to an
-interactive DSH session; these workers are separate headless DSH processes.
+The dashboard is not the DSH TUI side panel. Inside dsh-tui, install the
+[Agent Workers panel](integrations/dsh-tui/README.md) to see the same jobs and
+cancel, clean up or delete them through the control API.
 
 ## Claude Code pane
 
@@ -632,6 +635,12 @@ Set `AGENT_WORKERS_CONTROL=0` (`false`, `no`, or `off` also work) to disable it.
 The owner lease is still written, with `control: null`. See
 [docs/control-protocol.md](docs/control-protocol.md) for the full contract.
 
+The lease also makes several Claude sessions safe on one state dir: a server
+that starts never interrupts or kills the running jobs of another live server,
+and cleanup, delete and retention refuse to touch a worktree or session that an
+active job still uses (`worktree_busy`, `session_busy`). Actions on another
+server's jobs over HTTP return `not_owner`.
+
 ## Watchdogs
 
 The server folds each worker's NDJSON events and recomputes alerts on every
@@ -703,8 +712,9 @@ hooks module is reported there with its reason.
 ## Limitations
 
 - The server stores job state in memory and recovers only terminal metadata after
-  restart; live jobs are marked `interrupted` and their known process group is
-  killed when the pid identity still matches.
+  restart. Live jobs whose server is gone are marked `interrupted` and their
+  known process group is killed when the pid identity still matches; jobs of
+  another live server are left alone.
 - A fresh worktree does not include ignored build artifacts such as
   `node_modules`.
 - Only Linux `/proc` start-time matching is implemented; other POSIX platforms
