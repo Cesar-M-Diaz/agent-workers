@@ -1,5 +1,5 @@
 import { describe, expect, mock, test } from 'claude-code/testing'
-import type { On } from 'claude-code'
+import type { McpConnectResult, McpToolResult, On } from 'claude-code'
 import type { Engine, MockClock } from 'claude-code/testing'
 import type { DshJob } from '../types'
 import {
@@ -575,10 +575,7 @@ function installFs(on: On, world: FakeWorld): void {
   })
 }
 
-type FakeMcpReply = {
-  content: Array<{ type: string; text?: string }>
-  isError?: boolean
-}
+type FakeMcpReply = McpToolResult
 
 type McpCall = {
   server: string
@@ -592,9 +589,7 @@ type Mocks = {
   copies: Array<{ text: string; surface?: string }>
   mcpCalls: McpCall[]
   mcpReply: FakeMcpReply
-  connectReply:
-    | { isConnected: true; server: string }
-    | { isConnected: false; reason: string; message: string }
+  connectReply: McpConnectResult
   tools: Array<{ name: string; description: string; mcp: boolean }>
 }
 
@@ -1265,7 +1260,7 @@ test('resolves a namespaced server through the connected tool list', async ($, o
   const mocks = installMocks(on, world)
   mocks.connectReply = {
     isConnected: false,
-    reason: 'not_listed',
+    reason: 'unlisted',
     message: 'not listed in this session',
   }
   mocks.tools = [

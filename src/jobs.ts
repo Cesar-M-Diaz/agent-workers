@@ -1,7 +1,7 @@
 import type { ChildProcessWithoutNullStreams } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { createWriteStream, type Dirent, type WriteStream } from 'node:fs';
-import { access, mkdir, readdir, readFile, stat, writeFile } from 'node:fs/promises';
+import { access, mkdir, readdir, readFile, rename, rm, stat, writeFile } from 'node:fs/promises';
 import { basename, join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { deleteJobRecord, JobAdminError, pruneExpiredJobs } from './admin.js';
@@ -271,6 +271,7 @@ export class JobManager {
   private readonly sessionLocks = new Map<string, string>();
   private readonly steering = new Set<string>();
   private readonly ownerId = randomUUID();
+  private writeSeq = 0;
   private readonly ownerStartedAt = new Date().toISOString();
   private defaultGroupId: string;
   private defaultGroupName: string;
@@ -1353,8 +1354,19 @@ export class JobManager {
     return job;
   }
 
+  /**
+   * Write job.json atomically: readers (the dashboard, the pane, a restarted
+   * server) poll it while a job runs and must never see a half-written file.
+   */
   private async writeJob(job: Job): Promise<void> {
-    await writeFile(job.jobPath, JSON.stringify(persisted(job), null, 2), { mode: 0o600 });
+    const tmpPath = `${job.jobPath}.${process.pid}.${++this.writeSeq}.tmp`;
+    try {
+      await writeFile(tmpPath, JSON.stringify(persisted(job), null, 2), { mode: 0o600 });
+      await rename(tmpPath, job.jobPath);
+    } catch (err) {
+      await rm(tmpPath, { force: true }).catch(() => undefined);
+      throw err;
+    }
   }
 
   private async eventsTail(path: string): Promise<string | undefined> {

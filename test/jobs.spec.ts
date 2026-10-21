@@ -1,4 +1,4 @@
-import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { chmod, mkdir, mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
@@ -157,6 +157,18 @@ describe('JobManager', () => {
 
     const result = await manager.result(first.job_id, 1000, new Set(['final']));
     expect(result.final).toBe('OK first');
+  });
+
+  it('writes job.json atomically, leaving no temporary files', async () => {
+    const started = await manager.start({ task: 'atomic', access: 'read-only' });
+    await manager.wait([started.job_id], 'all', 10_000);
+    const dir = join(config.stateDir, 'jobs', started.job_id);
+    const saved = JSON.parse(await readFile(join(dir, 'job.json'), 'utf8')) as {
+      id: string;
+      status: string;
+    };
+    expect(saved).toMatchObject({ id: started.job_id, status: 'succeeded' });
+    expect((await readdir(dir)).filter((name) => name.endsWith('.tmp'))).toEqual([]);
   });
 
   it('isolates a write in a git worktree, reports the diff, and preserves dirty worktrees', async () => {

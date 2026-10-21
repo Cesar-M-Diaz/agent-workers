@@ -26,6 +26,32 @@ Claude Code plugin "dsh-workers"
 These workers are separate DSH processes. They are not Claude `Task` calls and
 do not appear in the DSH TUI native subagent side panel.
 
+## How it works
+
+A typical delegation, end to end:
+
+1. You ask Claude for work that splits into independent pieces. The
+   `dsh-parallel` skill tells Claude when to delegate and how to write a
+   self-contained task, because a worker never sees your conversation.
+2. Claude calls `dsh_start`. Code changes run as `workspace-write` in a fresh
+   git worktree (`<state>/worktrees/<job>`, branch `dsh/<job>`); read-only work
+   runs in place. The server queues the job and spawns
+   `dsh --profile <profile> --json`, feeding the task on stdin.
+3. The worker's NDJSON events are appended to `<state>/jobs/<job>/events.ndjson`
+   and folded into `job.json`. The pane and the dashboard read those files
+   directly, so you watch progress without any model calls.
+4. Claude waits with `dsh_wait`. Watchdogs flag stalls, loops, repeated tool
+   errors and budget overruns; a new alert wakes the wait (`alerted`) so Claude
+   can inspect `dsh_events` and correct the worker with `dsh_steer`, which
+   cancels it and resumes the same DSH session with a new instruction.
+5. Claude reads `dsh_result` (final answer plus the worktree diff), verifies it
+   against the project's checks, and applies or rejects it.
+6. Claude deletes or cleans the job in the same turn (`dsh_delete` /
+   `dsh_cleanup`). You can do the same from the pane's buttons.
+
+A worker cannot receive messages while it runs: `dsh` headless answers one task
+and exits. Steering is always cancel + resume.
+
 ## Install
 
 The repository is both the plugin and its marketplace:
@@ -41,16 +67,42 @@ Or register the marketplace first and install by name:
 /plugin install dsh-workers@dsh-workers
 ```
 
-To run a working copy without installing:
+To install from a local clone (no push needed), register the folder as the
+marketplace:
+
+```sh
+claude plugin marketplace add /path/to/dsh-workers
+claude plugin install dsh-workers@dsh-workers
+# after editing the clone: bump the version in .claude-plugin/plugin.json, then
+claude plugin marketplace update dsh-workers
+claude plugin update dsh-workers@dsh-workers
+```
+
+To run a working copy for one session without installing:
 
 ```sh
 claude --plugin-dir /path/to/dsh-workers
 ```
 
-At install, Claude Code asks for the plugin's `userConfig` values. They are
-stored in `pluginConfigs` in your settings and passed to the MCP server through
-`.mcp.json` env substitution. Restart Claude Code or run `/reload-plugins` after
-changing them.
+Then set the plugin's `userConfig` values. The interactive `/plugin` installer
+asks for them; a CLI install leaves them unset. Either way you can set them
+later with `/plugin configure dsh-workers@dsh-workers`, or from a shell:
+
+```sh
+echo '{"allowed_roots":"/home/me/work:/home/me/projects","dsh_bin":"/home/me/.volta/bin/dsh","use_dsh_credentials":"true"}' \
+  | claude plugin configure dsh-workers@dsh-workers --values-stdin
+```
+
+Values are stored in `pluginConfigs` in your settings and passed to the MCP
+server through `.mcp.json` env substitution. Restart Claude Code after changing
+them.
+
+Set `allowed_roots` explicitly. Left empty, workers may only use the directory
+Claude Code was started in.
+
+When you open Claude Code inside this repository, it also offers the root
+`.mcp.json` as a project MCP server. Decline it: the installed plugin already
+provides the same server, and enabling both duplicates every tool.
 
 ### Plugin settings
 
@@ -235,6 +287,11 @@ by any session show up without an MCP round trip.
   its `cwd`. Both must equal the session cwd or lie inside it. The toggle
   switches to all jobs and groups them under `groupName`.
 
+The pane draws on a solid black background, and every button sits in its own
+small rounded frame; a button waiting for its confirming press lights its frame
+in the warning color. Claude Code paints panes opaque, so a pane cannot show a
+translucent or image terminal background the way the transcript does.
+
 The pane asks for 58 columns and refreshes once a second from a timer. The
 render hook reads only in-memory `$.state` atoms and never touches the file
 system. Every line is measured against the card's inner width (`bodyColumns`
@@ -323,16 +380,13 @@ columns** the pane docks beside the chat; otherwise it draws inline above the
 prompt. `/dsh-workers:dsh-pane` is the person's own request, so it is placed at
 any width.
 
-### A note for the MCP: write `job.json` atomically
+### `job.json` writes are atomic
 
-The MCP rewrites `job.json` in place, non-atomically, about once a second.
-A reader can therefore see a truncated or invalid file. This pane is tolerant:
-it keeps the last valid parsed job and shows a small dim warning instead of
-dropping the row, and it recovers on the next valid read.
-
-The cleaner fix belongs in the MCP's `writeJob`: write to a temporary file in
-the same directory and `rename()` it over `job.json`. Rename is atomic on the
-same filesystem, so readers never observe a half-written file.
+The MCP rewrites `job.json` about once a second while a job runs. `writeJob`
+writes a temporary file in the same directory and `rename()`s it over
+`job.json`, so the pane, the dashboard, and a restarted server never read a
+half-written file. The pane still keeps the last valid parsed job if a read
+fails for another reason (a permissions error, a file from an older server).
 
 ## Headless credentials
 
@@ -357,7 +411,7 @@ and `dsh_profile` switches the profile for the current MCP session. `dsh_start`
 also accepts `profile` for a single job; existing jobs keep their profile,
 including when resumed.
 
-The local setup uses three profiles:
+For example, a setup with one work and two personal providers could use:
 
 | Profile | Provider | Model | Credential |
 | --- | --- | --- | --- |
@@ -365,9 +419,10 @@ The local setup uses three profiles:
 | `personal-deepseek` | `deepseek-official` | `deepseek-flash` | `DEEPSEEK_API_KEY` |
 | `personal-opencode` | `opencode-go` | `deepseek-v4.1-flash` | `OPENCODE_GO_API_KEY` |
 
-`personal-opencode` also registers `glm-5.3-flash`. Create more directories
-with the same files (including `metadata.json`) to add profiles; `dsh_profile`
-lists them dynamically.
+Profile names are free-form; only `work-openrouter` and `headless` have a
+meaning to the server, as the default starting profile and its fallback (or set
+`profile` in the plugin settings). Create a directory per profile with the same
+files (including `metadata.json`); `dsh_profile` lists them dynamically.
 
 Each profile also has a `metadata.json` with its `provider` and `model`. The
 server copies that metadata into every job so the dashboard can estimate cost;

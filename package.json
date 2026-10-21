@@ -1,6 +1,6 @@
 {
   "name": "dsh-workers",
-  "version": "0.3.2",
+  "version": "0.3.3",
   "private": true,
   "description": "Claude Code plugin and marketplace for running DeepSeek Harness (dsh) headless workers in parallel",
   "type": "module",

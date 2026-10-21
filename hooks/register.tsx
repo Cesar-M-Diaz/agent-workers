@@ -69,6 +69,9 @@ import {
 const PANE_ID = 'dsh-workers'
 const REFRESH_MS = 1000
 const PANE_COLUMNS = 58
+// Claude Code paints panes opaque; a solid black reads closest to the
+// transcript on a dark, translucent terminal.
+const PANE_BACKGROUND = 'black'
 
 const EMPTY_VIEW: DshPaneView = {
   isLoaded: false,
@@ -687,6 +690,24 @@ export const register: Register = (on, options) => {
       ? groupJobs(rows).map(group => ({ name: group.name, jobs: group.jobs }))
       : [{ name: null, jobs: rows }]
 
+    // Every button sits in its own small rounded frame; an armed (confirm)
+    // button lights its frame in the warning color.
+    const framed = (
+      key: string,
+      button: RenderElement,
+      isArmed = false,
+    ): RenderElement => (
+      <Box
+        key={`frame:${key}`}
+        borderStyle="round"
+        borderColor={isArmed ? 'warning' : 'subtle'}
+        borderDimColor={!isArmed}
+        paddingX={1}
+      >
+        {button}
+      </Box>
+    )
+
     const line = (
       key: string,
       parts: readonly LinePart[],
@@ -1159,18 +1180,23 @@ export const register: Register = (on, options) => {
             )
             if (full !== preview) {
               details.push(
-                <Button
-                  key={`final:${job.id}`}
-                  plain
-                  dimColor
-                  onPress={() => {
-                    void update($, finalExpandedAtom, ids =>
-                      toggleExpanded(ids, job.id),
-                    )
-                  }}
-                >
-                  {showFull ? 'less' : 'more'}
-                </Button>,
+                <Box key={`frame:final:${job.id}`} flexDirection="row">
+                  {framed(
+                    `final:${job.id}`,
+                    <Button
+                      key={`final:${job.id}`}
+                      plain
+                      dimColor
+                      onPress={() => {
+                        void update($, finalExpandedAtom, ids =>
+                          toggleExpanded(ids, job.id),
+                        )
+                      }}
+                    >
+                      {showFull ? 'less' : 'more'}
+                    </Button>,
+                  )}
+                </Box>,
               )
             }
           } else {
@@ -1253,83 +1279,101 @@ export const register: Register = (on, options) => {
         }
 
         details.push(
-          <Box key={`actions:${job.id}`} flexDirection="row" gap={1}>
-            <Button
-              key={`copy-id:${job.id}`}
-              plain
-              dimColor
-              onPress={press => {
-                void $.ui
-                  .copy({ text: job.id, surface: press.surface })
-                  .catch(() => undefined)
-              }}
-            >
-              copy id
-            </Button>
-            {job.worktree?.branch !== undefined && (
+          <Box
+            key={`actions:${job.id}`}
+            flexDirection="row"
+            flexWrap="wrap"
+            columnGap={1}
+          >
+            {framed(
+              `copy-id:${job.id}`,
               <Button
-                key={`copy-branch:${job.id}`}
+                key={`copy-id:${job.id}`}
                 plain
                 dimColor
                 onPress={press => {
                   void $.ui
-                    .copy({
-                      text: job.worktree?.branch ?? '',
-                      surface: press.surface,
-                    })
+                    .copy({ text: job.id, surface: press.surface })
                     .catch(() => undefined)
                 }}
               >
-                copy branch
-              </Button>
+                copy id
+              </Button>,
             )}
-            {canCleanup && (
-              <Button
-                key={`cleanup:${job.id}`}
-                plain
-                dimColor={
-                  !(
-                    jobPending?.action === 'cleanup' &&
-                    jobPending.stage === 'confirm'
-                  )
-                }
-                onPress={() => {
-                  void pressAction($, job, 'cleanup', 'confirm')
-                }}
-              >
-                {jobPending?.action === 'cleanup' &&
-                jobPending.stage === 'confirm' ? (
-                  <Text color="warning">confirm cleanup?</Text>
-                ) : (
-                  'cleanup'
-                )}
-              </Button>
-            )}
-            {status.isTerminal && (
-              <Button
-                key={`delete:${job.id}`}
-                plain
-                dimColor={
-                  !(
-                    jobPending?.action === 'delete' &&
-                    jobPending.stage === 'confirm'
-                  )
-                }
-                onPress={() => {
-                  void pressAction($, job, 'delete', 'confirm')
-                }}
-              >
-                {jobPending?.action === 'delete' &&
-                jobPending.stage === 'confirm' ? (
-                  <Text color="warning">confirm delete?</Text>
-                ) : (
-                  'delete'
-                )}
-              </Button>
-            )}
+            {job.worktree?.branch !== undefined &&
+              framed(
+                `copy-branch:${job.id}`,
+                <Button
+                  key={`copy-branch:${job.id}`}
+                  plain
+                  dimColor
+                  onPress={press => {
+                    void $.ui
+                      .copy({
+                        text: job.worktree?.branch ?? '',
+                        surface: press.surface,
+                      })
+                      .catch(() => undefined)
+                  }}
+                >
+                  copy branch
+                </Button>,
+              )}
+            {canCleanup &&
+              framed(
+                `cleanup:${job.id}`,
+                <Button
+                  key={`cleanup:${job.id}`}
+                  plain
+                  dimColor={
+                    !(
+                      jobPending?.action === 'cleanup' &&
+                      jobPending.stage === 'confirm'
+                    )
+                  }
+                  onPress={() => {
+                    void pressAction($, job, 'cleanup', 'confirm')
+                  }}
+                >
+                  {jobPending?.action === 'cleanup' &&
+                  jobPending.stage === 'confirm' ? (
+                    <Text color="warning">confirm cleanup?</Text>
+                  ) : (
+                    'cleanup'
+                  )}
+                </Button>,
+                jobPending?.action === 'cleanup' && jobPending.stage === 'confirm',
+              )}
+            {status.isTerminal &&
+              framed(
+                `delete:${job.id}`,
+                <Button
+                  key={`delete:${job.id}`}
+                  plain
+                  dimColor={
+                    !(
+                      jobPending?.action === 'delete' &&
+                      jobPending.stage === 'confirm'
+                    )
+                  }
+                  onPress={() => {
+                    void pressAction($, job, 'delete', 'confirm')
+                  }}
+                >
+                  {jobPending?.action === 'delete' &&
+                  jobPending.stage === 'confirm' ? (
+                    <Text color="warning">confirm delete?</Text>
+                  ) : (
+                    'delete'
+                  )}
+                </Button>,
+                jobPending?.action === 'delete' && jobPending.stage === 'confirm',
+              )}
             {status.isTerminal &&
               actionResult?.needsDiscard === true &&
-              actionResult.action === 'cleanup' && (
+              actionResult.action === 'cleanup' &&
+              framed(
+                `discard-clean:${job.id}`,
                 <Button
                   key={`discard-clean:${job.id}`}
                   plain
@@ -1349,11 +1393,14 @@ export const register: Register = (on, options) => {
                   ) : (
                     'discard & clean'
                   )}
-                </Button>
+                </Button>,
+                true,
               )}
             {status.isTerminal &&
               actionResult?.needsDiscard === true &&
-              actionResult.action === 'delete' && (
+              actionResult.action === 'delete' &&
+              framed(
+                `discard-delete:${job.id}`,
                 <Button
                   key={`discard-delete:${job.id}`}
                   plain
@@ -1373,7 +1420,8 @@ export const register: Register = (on, options) => {
                   ) : (
                     'discard & delete'
                   )}
-                </Button>
+                </Button>,
+                true,
               )}
           </Box>,
         )
@@ -1439,21 +1487,32 @@ export const register: Register = (on, options) => {
     )
 
     return (
-      <Box flexDirection="column">
-        <Box flexDirection="row" justifyContent="space-between">
+      <Box
+        flexDirection="column"
+        backgroundColor={PANE_BACKGROUND}
+        minHeight={e.props.scroll?.bodyRows}
+      >
+        <Box
+          flexDirection="row"
+          justifyContent="space-between"
+          alignItems="center"
+        >
           <Text bold color="claude">
-            {truncateLine(title, Math.max(1, columns - scope.length - 1))}
+            {truncateLine(title, Math.max(1, columns - scope.length - 5))}
           </Text>
-          <Button
-            key="toggle-filter"
-            plain
-            dimColor
-            onPress={() => {
-              void update($, showAllAtom, value => !value)
-            }}
-          >
-            {truncateLine(scope, scopeWidth)}
-          </Button>
+          {framed(
+            'toggle-filter',
+            <Button
+              key="toggle-filter"
+              plain
+              dimColor
+              onPress={() => {
+                void update($, showAllAtom, value => !value)
+              }}
+            >
+              {truncateLine(scope, Math.max(1, scopeWidth - 4))}
+            </Button>,
+          )}
         </Box>
         {line('summary', summaryParts, columns)}
         {totals.length > 0 && line('totals', joinParts(totals), columns)}

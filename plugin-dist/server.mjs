@@ -36767,7 +36767,7 @@ async function resolveOpenCodeGoApiKey(config2) {
 // src/jobs.ts
 import { randomUUID } from "node:crypto";
 import { createWriteStream } from "node:fs";
-import { access, mkdir as mkdir3, readdir as readdir2, readFile as readFile5, stat as stat4, writeFile } from "node:fs/promises";
+import { access, mkdir as mkdir3, readdir as readdir2, readFile as readFile5, rename, rm as rm3, stat as stat4, writeFile } from "node:fs/promises";
 import { basename, join as join4 } from "node:path";
 import { setTimeout as delay2 } from "node:timers/promises";
 
@@ -37713,6 +37713,7 @@ var JobManager = class {
   sessionLocks = /* @__PURE__ */ new Map();
   steering = /* @__PURE__ */ new Set();
   ownerId = randomUUID();
+  writeSeq = 0;
   ownerStartedAt = (/* @__PURE__ */ new Date()).toISOString();
   defaultGroupId;
   defaultGroupName;
@@ -38653,8 +38654,19 @@ var JobManager = class {
     if (!job) throw new JobError("resume_unavailable", `unknown job ${id}`);
     return job;
   }
+  /**
+   * Write job.json atomically: readers (the dashboard, the pane, a restarted
+   * server) poll it while a job runs and must never see a half-written file.
+   */
   async writeJob(job) {
-    await writeFile(job.jobPath, JSON.stringify(persisted(job), null, 2), { mode: 384 });
+    const tmpPath = `${job.jobPath}.${process.pid}.${++this.writeSeq}.tmp`;
+    try {
+      await writeFile(tmpPath, JSON.stringify(persisted(job), null, 2), { mode: 384 });
+      await rename(tmpPath, job.jobPath);
+    } catch (err) {
+      await rm3(tmpPath, { force: true }).catch(() => void 0);
+      throw err;
+    }
   }
   async eventsTail(path) {
     try {
