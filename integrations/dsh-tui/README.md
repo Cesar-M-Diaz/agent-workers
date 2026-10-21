@@ -125,7 +125,7 @@ keep the panel and the Claude Code plugin pointed at the same directory.
 ```sh
 cd integrations/dsh-tui
 pnpm install --ignore-workspace
-pnpm test        # tsc -p tsconfig.json && node --test lib/*.test.js
+pnpm test        # tsc -p tsconfig.json && node --test lib/*.spec.js
 pnpm build
 ```
 

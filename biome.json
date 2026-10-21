@@ -56,7 +56,7 @@
   },
   "overrides": [
     {
-      "includes": ["integrations/dsh-tui/src/**/*.test.ts"],
+      "includes": ["integrations/dsh-tui/src/**/*.spec.ts"],
       "linter": {
         "rules": {
           "suspicious": {
