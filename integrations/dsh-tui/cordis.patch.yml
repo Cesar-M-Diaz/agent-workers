@@ -1,0 +1,4 @@
+# Adds the read-only Agent Workers panel to the dsh-tui profile.
+- insert:
+    - id: dsh-tui-agent-workers
+      name: 'dsh-tui-agent-workers'
