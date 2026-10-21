@@ -13,7 +13,9 @@ export function createEngines(
     dsh,
     pi,
     byId(id: EngineId) {
-      return id === 'dsh' ? dsh : pi;
+      if (id === 'dsh') return dsh;
+      if (id === 'pi') return pi;
+      throw new Error(`unknown worker backend: ${String(id)}`);
     },
   };
 }

@@ -399,6 +399,7 @@ async function loadConfig() {
     piModel: process.env.DSH_WORKERS_PI_MODEL?.trim() || "",
     piThinking: process.env.DSH_WORKERS_PI_THINKING?.trim() || "",
     piAgentDir: piAgentDir ? resolve3(expandHome(piAgentDir)) : "",
+    piAllowWrite: boolEnv("DSH_WORKERS_PI_ALLOW_WRITE"),
     allowedRoots,
     stateDir,
     worktreeRoot,

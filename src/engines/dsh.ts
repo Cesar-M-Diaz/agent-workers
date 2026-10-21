@@ -100,7 +100,7 @@ export class DshEngine implements Engine {
         });
         if (result.code !== 0) {
           throw new JobError(
-            'dsh_unavailable',
+            'worker_unavailable',
             `cannot initialize dsh profile ${profile}: ${result.stderr.trim()}`,
           );
         }

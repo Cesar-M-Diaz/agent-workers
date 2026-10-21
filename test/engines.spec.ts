@@ -65,8 +65,9 @@ describe('PiEngine', () => {
       thinking: 'low',
     });
 
+    expect(engine.supportsResume).toBe(false);
     const plan = await engine.launch(spec, 'review this');
-    expect(plan.taskInput).toBe('argv');
+    expect(plan.taskInput).toBe('stdin');
     expect(plan.args).toEqual([
       '--mode',
       'json',
@@ -83,7 +84,6 @@ describe('PiEngine', () => {
       join('/tmp/agent-workers-job', 'pi-sessions'),
       '--tools',
       'read,grep,find,ls',
-      'review this',
     ]);
   });
 
@@ -112,6 +112,38 @@ describe('PiEngine', () => {
     expect(plan.args).toContain('openrouter/deepseek/deepseek-v4.1-flash-1017');
     expect(plan.args).toContain('--thinking');
     expect(plan.args).toContain('high');
+  });
+
+  it('does not treat a model tag such as :free as a thinking level', async () => {
+    const engine = new PiEngine(config(), () => ({}));
+    await engine.init();
+    expect(await engine.readProfileMetadata('openrouter/qwen/qwen3-coder:free')).toEqual({
+      provider: 'openrouter',
+      model: 'qwen/qwen3-coder:free',
+    });
+  });
+
+  it('uses the write toolset when the caller allows workspace writes', async () => {
+    const engine = new PiEngine(config(), () => ({}));
+    await engine.init();
+    const plan = await engine.launch({ ...spec, access: 'workspace-write' }, 'task');
+    expect(plan.args).toContain('read,bash,edit,write');
+  });
+
+  it('rejects an invalid thinking level before spawning', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'pi-profiles-'));
+    const file = join(dir, 'pi-profiles.json');
+    await writeFile(
+      file,
+      JSON.stringify({
+        bad: { provider: 'openrouter', model: 'qwen/qwen3-coder', thinking: 'free' },
+      }),
+    );
+    const engine = new PiEngine(config({ piProfilesFile: file }), () => ({}));
+    await engine.init();
+    await expect(engine.launch({ ...spec, profile: 'bad' }, 'task')).rejects.toMatchObject({
+      code: 'unknown_profile',
+    });
   });
 
   it('rejects an unknown non-model profile', async () => {

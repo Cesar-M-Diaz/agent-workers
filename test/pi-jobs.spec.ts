@@ -6,33 +6,23 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import type { Config } from '../src/config.js';
 import { JobManager } from '../src/jobs.js';
 
-const fakePi = `#!/usr/bin/env node
-import { readFile, writeFile } from 'node:fs/promises';
-if (process.argv.includes('--version')) {
-  process.stdout.write('fake pi 1.0.0\\n');
-  process.exit(0);
-}
-await writeFile(process.env.PI_ARGV_FILE, JSON.stringify(process.argv.slice(2)));
-const fixture = await readFile(process.env.PI_FIXTURE, 'utf8');
-process.stdout.write(fixture);
-`;
-
 describe('JobManager pi backend', () => {
   let root: string;
   let repo: string;
   let manager: JobManager;
   let config: Config;
   let argvFile: string;
+  let stdinFile: string;
 
   beforeAll(async () => {
     root = await mkdtemp(join(tmpdir(), 'agent-workers-pi-test-'));
     repo = join(root, 'repo');
     await mkdir(repo);
     await writeFile(join(repo, 'README.md'), 'base\n');
-    const fake = join(root, 'fake-pi.mjs');
-    await writeFile(fake, fakePi, { mode: 0o700 });
+    const fake = join(process.cwd(), 'test/fixtures/pi/fake-pi.mjs');
     await chmod(fake, 0o700);
     argvFile = join(root, 'argv.json');
+    stdinFile = join(root, 'stdin.txt');
     config = {
       backend: 'pi',
       dshBin: 'true',
@@ -49,7 +39,7 @@ describe('JobManager pi backend', () => {
       retentionDays: 7,
       useDshCredentials: false,
       credentialsFile: join(root, 'credentials.yaml'),
-      envAllow: ['PATH', 'HOME', 'PI_FIXTURE', 'PI_ARGV_FILE'],
+      envAllow: ['PATH', 'HOME', 'PI_FIXTURE', 'PI_ARGV_FILE', 'PI_STDIN_FILE'],
       stallMs: 120_000,
       loopRepeat: 4,
       toolErrorLimit: 5,
@@ -59,12 +49,14 @@ describe('JobManager pi backend', () => {
       piModel: 'openrouter/deepseek/deepseek-v4.1-flash-1017:low',
       piThinking: 'low',
       piAgentDir: '',
+      piAllowWrite: false,
     };
     await mkdir(config.stateDir);
     await mkdir(config.worktreeRoot);
     await mkdir(config.dshHome);
     process.env.PI_FIXTURE = join(process.cwd(), 'test/fixtures/pi/json-basic.jsonl');
     process.env.PI_ARGV_FILE = argvFile;
+    process.env.PI_STDIN_FILE = stdinFile;
     manager = new JobManager(config);
     await manager.init();
   });
@@ -73,10 +65,11 @@ describe('JobManager pi backend', () => {
     await manager.shutdown();
     delete process.env.PI_FIXTURE;
     delete process.env.PI_ARGV_FILE;
+    delete process.env.PI_STDIN_FILE;
     await rm(root, { recursive: true, force: true });
   });
 
-  it('runs a pi job, normalizes events, and reports backend/cost', async () => {
+  it('runs a pi job over stdin, normalizes events, and reports backend/cost', async () => {
     const started = await manager.start({
       task: 'review this',
       access: 'read-only',
@@ -108,7 +101,8 @@ describe('JobManager pi backend', () => {
         'read,grep,find,ls',
       ]),
     );
-    expect(argv.at(-1)).toBe('review this');
+    expect(argv).not.toContain('review this');
+    expect(await readFile(stdinFile, 'utf8')).toBe('review this');
 
     const saved = JSON.parse(
       await readFile(join(config.stateDir, 'jobs', started.job_id, 'job.json'), 'utf8'),
@@ -126,5 +120,79 @@ describe('JobManager pi backend', () => {
     expect(events.map((event) => event.type)).toContain('tool_call');
     expect(events.map((event) => event.type)).toContain('final');
     expect(events.some((event) => event.type === 'session')).toBe(true);
+  });
+
+  it('refuses to resume or steer a pi job for now', async () => {
+    const started = await manager.start({ task: 'no resume yet', access: 'read-only' });
+    await manager.wait([started.job_id], 'all', 10_000);
+
+    await expect(
+      manager.start({ task: 'resume', resume_job_id: started.job_id }),
+    ).rejects.toMatchObject({ code: 'resume_unavailable' });
+    await expect(manager.steer({ job_id: started.job_id, message: 'steer' })).rejects.toMatchObject(
+      { code: 'resume_unavailable' },
+    );
+  });
+
+  it('treats a successful auto-retry as a success', async () => {
+    const previous = process.env.PI_FIXTURE;
+    process.env.PI_FIXTURE = join(process.cwd(), 'test/fixtures/pi/json-retry.jsonl');
+    try {
+      const started = await manager.start({ task: 'retry', access: 'read-only' });
+      const waited = await manager.wait([started.job_id], 'all', 10_000);
+      expect(waited.jobs[0]?.status).toBe('succeeded');
+      const result = await manager.result(started.job_id, 1000, new Set(['final']));
+      expect(result.final).toBe('done');
+    } finally {
+      if (previous === undefined) delete process.env.PI_FIXTURE;
+      else process.env.PI_FIXTURE = previous;
+    }
+  });
+
+  it('reports an output-limit stop as turn_error', async () => {
+    const previous = process.env.PI_FIXTURE;
+    process.env.PI_FIXTURE = join(process.cwd(), 'test/fixtures/pi/json-length.jsonl');
+    try {
+      const started = await manager.start({ task: 'length', access: 'read-only' });
+      const waited = await manager.wait([started.job_id], 'all', 10_000);
+      expect(waited.jobs[0]?.status).toBe('failed');
+      expect(waited.jobs[0]?.reason).toBe('turn_error');
+      const result = await manager.result(started.job_id, 1000, new Set(['final']));
+      expect(result.final).toBe('partial');
+    } finally {
+      if (previous === undefined) delete process.env.PI_FIXTURE;
+      else process.env.PI_FIXTURE = previous;
+    }
+  });
+
+  it('rejects workspace-write for pi unless the opt-in is enabled', async () => {
+    await expect(
+      manager.start({ task: 'write', access: 'workspace-write', backend: 'pi' }),
+    ).rejects.toMatchObject({ code: 'pi_write_disabled' });
+  });
+
+  it('falls back to the pi default profile when the shared profile is a dsh one', async () => {
+    const temp = await mkdtemp(join(tmpdir(), 'agent-workers-pi-profile-'));
+    const previous = process.env.DSH_WORKERS_PROFILE;
+    process.env.DSH_WORKERS_PROFILE = 'work-openrouter';
+    try {
+      const fallbackConfig: Config = {
+        ...config,
+        stateDir: join(temp, 'state'),
+        worktreeRoot: join(temp, 'worktrees'),
+        dshHome: join(temp, 'dsh-home'),
+      };
+      await mkdir(fallbackConfig.stateDir);
+      await mkdir(fallbackConfig.worktreeRoot);
+      await mkdir(fallbackConfig.dshHome);
+      const fallback = new JobManager(fallbackConfig);
+      await fallback.init();
+      expect((await fallback.profileStatus()).profile).toBe('default');
+      await fallback.shutdown();
+    } finally {
+      if (previous === undefined) delete process.env.DSH_WORKERS_PROFILE;
+      else process.env.DSH_WORKERS_PROFILE = previous;
+      await rm(temp, { recursive: true, force: true });
+    }
   });
 });

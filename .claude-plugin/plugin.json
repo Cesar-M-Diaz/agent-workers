@@ -67,6 +67,13 @@
       "required": false,
       "default": ""
     },
+    "pi_allow_write": {
+      "type": "boolean",
+      "title": "Allow pi workspace writes",
+      "description": "pi has no sandbox. workspace-write is disabled by default; enable it only with worktree isolation.",
+      "required": false,
+      "default": false
+    },
     "state_dir": {
       "type": "string",
       "title": "State directory",

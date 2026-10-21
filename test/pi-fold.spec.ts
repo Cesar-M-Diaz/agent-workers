@@ -66,6 +66,34 @@ describe('PiFold', () => {
     expect(emitted.some((event) => event.type === 'error')).toBe(true);
   });
 
+  it('clears a transient error after a successful auto-retry', () => {
+    const { state, emitted } = run('json-retry.jsonl');
+    expect(state.turnEndKind).toBe('completed');
+    expect(state.finalText).toBe('done');
+    expect(state.errorMessage).toBeUndefined();
+    expect(state.usage).toMatchObject({ inputTokens: 14, outputTokens: 3 });
+    expect(emitted.at(-1)).toEqual({ type: 'final', text: 'done' });
+    expect(emitted.find((event) => event.type === 'error')).toMatchObject({
+      message: '429 rate limited',
+    });
+  });
+
+  it('keeps the final error when the retry gives up', () => {
+    const { state, emitted } = run('json-retry-failed.jsonl');
+    expect(state.turnEndKind).toBe('error');
+    expect(state.finalText).toBeUndefined();
+    expect(state.errorMessage).toBe('boom');
+    expect(emitted.some((event) => event.type === 'final')).toBe(false);
+    expect(emitted.some((event) => event.type === 'error')).toBe(true);
+  });
+
+  it('keeps partial text when the model stops at the output limit', () => {
+    const { state, emitted } = run('json-length.jsonl');
+    expect(state.turnEndKind).toBe('length');
+    expect(state.finalText).toBe('partial');
+    expect(emitted.at(-1)).toEqual({ type: 'final', text: 'partial' });
+  });
+
   it('handles a final line split across chunks', () => {
     const text = readFileSync('test/fixtures/pi/json-basic.jsonl', 'utf8');
     const cut = text.indexOf('agent_settled');

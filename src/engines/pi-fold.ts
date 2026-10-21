@@ -172,12 +172,32 @@ export class PiFold implements Fold {
         const text = textBlocks(message.content);
         if (text) this.lastAssistantText = text;
         if (message.stopReason === 'error') {
-          const error = text || 'pi turn ended with error';
+          const error =
+            (typeof message.errorMessage === 'string' && message.errorMessage.trim()) ||
+            text ||
+            'pi turn ended with error';
           this.state.errorMessage = error;
           this.emit({ type: 'error', message: error });
         }
         return;
       }
+      case 'auto_retry_start':
+        // The failed attempt is being retried automatically; do not fail the
+        // job for an error that pi may recover from.
+        this.state.errorMessage = undefined;
+        return;
+      case 'auto_retry_end': {
+        if (event.success === true) {
+          this.state.errorMessage = undefined;
+        } else if (typeof event.finalError === 'string' && event.finalError.trim()) {
+          this.state.errorMessage = event.finalError;
+          this.emit({ type: 'error', message: event.finalError });
+        }
+        return;
+      }
+      case 'agent_end':
+        if (event.willRetry === true) this.state.errorMessage = undefined;
+        return;
       case 'tool_execution_start': {
         const tool = typeof event.toolName === 'string' ? event.toolName : 'tool';
         this.state.toolCalls += 1;
@@ -224,7 +244,10 @@ export class PiFold implements Fold {
           this.state.turnEndKind = 'aborted';
           return;
         }
-        if (this.state.turnEndKind === 'completed' && this.lastAssistantText !== '') {
+        if (
+          (this.state.turnEndKind === 'completed' || this.state.turnEndKind === 'length') &&
+          this.lastAssistantText !== ''
+        ) {
           this.state.finalText = this.lastAssistantText;
           this.emit({ type: 'final', text: this.lastAssistantText });
         }

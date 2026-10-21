@@ -19,12 +19,15 @@ interface PiProfile {
   thinking?: string;
 }
 
+const THINKING_LEVELS = new Set(['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max']);
+
 function parseModel(value: string): EngineProfileMetadata {
   let text = value.trim();
   let thinking: string | undefined;
   const colon = text.lastIndexOf(':');
-  if (colon > 0 && /^[a-z]+$/i.test(text.slice(colon + 1))) {
-    thinking = text.slice(colon + 1);
+  const suffix = colon > 0 ? text.slice(colon + 1).toLowerCase() : '';
+  if (colon > 0 && THINKING_LEVELS.has(suffix)) {
+    thinking = suffix;
     text = text.slice(0, colon);
   }
   const slash = text.indexOf('/');
@@ -48,7 +51,8 @@ export class PiEngine implements Engine {
   readonly id = 'pi' as const;
   readonly label = 'pi';
   readonly defaultProfile = 'default';
-  readonly supportsResume = true;
+  // Resume/steer need the original job's session directory; that is phase 3.
+  readonly supportsResume = false;
 
   private version = 'unavailable';
   private profiles: Record<string, PiProfile> = {};
@@ -98,11 +102,15 @@ export class PiEngine implements Engine {
   }
 
   async ensureReady(): Promise<void> {
-    // pi reports model/auth failures on the first prompt; init already proved
-    // that the binary exists.
+    if (this.version === 'unavailable') {
+      throw new JobError(
+        'pi_unavailable',
+        'pi is not available; check the pi binary and its configuration',
+      );
+    }
   }
 
-  async launch(spec: EngineLaunchSpec, task: string): Promise<EngineLaunchPlan> {
+  async launch(spec: EngineLaunchSpec, _task: string): Promise<EngineLaunchPlan> {
     const metadata = await this.readProfileMetadata(spec.profile);
     const modelArg =
       metadata.provider && metadata.model
@@ -111,6 +119,12 @@ export class PiEngine implements Engine {
     const thinking =
       metadata.thinking ??
       (spec.profile === 'default' ? this.config.piThinking?.trim() : undefined);
+    if (thinking && !THINKING_LEVELS.has(thinking)) {
+      throw new JobError(
+        'unknown_profile',
+        `invalid pi thinking level ${thinking}; expected off, minimal, low, medium, high, xhigh or max`,
+      );
+    }
 
     const args = ['--mode', 'json'];
     if (modelArg) args.push('--model', modelArg);
@@ -127,7 +141,6 @@ export class PiEngine implements Engine {
       spec.access === 'workspace-write' ? 'read,bash,edit,write' : 'read,grep,find,ls',
     );
     if (spec.sessionId) args.push('--session-id', spec.sessionId);
-    args.push(task);
 
     const env = this.baseEnv(spec.depth);
     const agentDir = this.config.piAgentDir?.trim();
@@ -136,7 +149,7 @@ export class PiEngine implements Engine {
       command: this.config.piBin ?? 'pi',
       args,
       env,
-      taskInput: 'argv',
+      taskInput: 'stdin',
     };
   }
 
@@ -166,7 +179,12 @@ export class PiEngine implements Engine {
         };
       }
       return result;
-    } catch {
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code === 'ENOENT') return {};
+      const message = err instanceof Error ? err.message : String(err);
+      process.stderr.write(
+        `${JSON.stringify({ event: 'pi_profiles_unreadable', file, error: message })}\n`,
+      );
       return {};
     }
   }

@@ -158,7 +158,9 @@ function appendTail(current: string, chunk: string, maxBytes = MAX_STDERR): stri
 }
 
 function costOf(job: Job): number | undefined {
-  return job.fold.state.costUsd ?? estimateCostUsd(job.provider, job.model, job.fold.state.usage);
+  const reported = job.fold.state.costUsd;
+  if (reported !== undefined && reported > 0) return reported;
+  return estimateCostUsd(job.provider, job.model, job.fold.state.usage) ?? reported;
 }
 
 function persisted(job: Job): PersistedJob {
@@ -210,6 +212,7 @@ function persisted(job: Job): PersistedJob {
 }
 
 function fromPersisted(saved: PersistedJob, engine: Engine): Job {
+  const backend: EngineId = saved.backend === 'pi' ? 'pi' : 'dsh';
   const fold = engine.createFold(() => undefined);
   fold.state.sessionId = saved.sessionId;
   fold.state.malformedLines = saved.malformedLines;
@@ -219,11 +222,11 @@ function fromPersisted(saved: PersistedJob, engine: Engine): Job {
   fold.state.lastTool = saved.lastTool;
   fold.state.turnEndKind = saved.turnEndKind;
   fold.state.usage = saved.usage;
-  fold.state.costUsd = saved.costUsd;
+  if (backend === 'pi') fold.state.costUsd = saved.costUsd;
   return {
     id: saved.id,
     label: saved.label,
-    backend: saved.backend ?? 'dsh',
+    backend,
     groupId: saved.groupId ?? saved.ownerId ?? 'legacy',
     groupName: saved.groupName ?? 'Legacy / ungrouped',
     ownerId: saved.ownerId ?? 'unknown',
@@ -304,13 +307,32 @@ export class JobManager {
     const initialized = await Promise.all([this.engines.dsh.init(), this.engines.pi.init()]);
     const active = this.activeEngine();
     const profiles = await active.availableProfiles();
-    if (!process.env.DSH_WORKERS_PROFILE?.trim()) {
+    const configuredProfile = process.env.DSH_WORKERS_PROFILE?.trim();
+    if (!configuredProfile) {
       if (!profiles.includes(this.activeProfile) && profiles.includes('headless')) {
         this.activeProfile = 'headless';
       }
-      if (!profiles.includes(this.activeProfile)) this.activeProfile = active.defaultProfile;
+      if (!profiles.includes(this.activeProfile)) {
+        this.activeProfile = await this.fallbackProfile(active);
+      }
     }
-    this.activeProfile = await active.resolveProfile(this.activeProfile);
+    try {
+      this.activeProfile = await active.resolveProfile(this.activeProfile);
+    } catch (err) {
+      if (configuredProfile && err instanceof JobError && err.code === 'unknown_profile') {
+        this.activeProfile = await active.resolveProfile(await this.fallbackProfile(active));
+        process.stderr.write(
+          `${JSON.stringify({
+            event: 'profile_fallback',
+            backend: this.backend,
+            requested: configuredProfile,
+            used: this.activeProfile,
+          })}\n`,
+        );
+      } else {
+        throw err;
+      }
+    }
     this.engineVersion = this.backend === 'dsh' ? initialized[0].version : initialized[1].version;
     await this.loadPreviousJobs();
     this.startWatchdog();
@@ -328,6 +350,22 @@ export class JobManager {
 
   private activeEngine(): Engine {
     return this.engines.byId(this.backend);
+  }
+
+  private async fallbackProfile(engine: Engine): Promise<string> {
+    const profiles = await engine.availableProfiles();
+    if (profiles.includes(engine.defaultProfile)) return engine.defaultProfile;
+    if (profiles.includes('headless')) return 'headless';
+    return engine.defaultProfile;
+  }
+
+  private assertBackendAccess(backend: EngineId, access: AccessMode): void {
+    if (backend === 'pi' && access === 'workspace-write' && !this.config.piAllowWrite) {
+      throw new JobError(
+        'pi_write_disabled',
+        'pi workers are read-only by default; set pi_allow_write (AGENT_WORKERS_PI_ALLOW_WRITE=1) to allow workspace writes',
+      );
+    }
   }
 
   private engineFor(id: EngineId): Engine {
@@ -378,7 +416,8 @@ export class JobManager {
       try {
         const saved = JSON.parse(await readFile(jobPath, 'utf8')) as PersistedJob;
         if (!saved?.id) continue;
-        const job = fromPersisted(saved, this.engineFor(saved.backend ?? 'dsh'));
+        const backend: EngineId = saved.backend === 'pi' ? 'pi' : 'dsh';
+        const job = fromPersisted(saved, this.engineFor(backend));
         if (!job.terminal) {
           if (job.pid !== undefined && job.pgidStartTime !== undefined) {
             const currentStart = await readStartTime(job.pid);
@@ -406,7 +445,7 @@ export class JobManager {
     const jobs = this.selectJobs(jobIds).map((job) => this.summary(job));
     return {
       server: {
-        dsh_version: this.engineVersion,
+        engine_version: this.engineVersion,
         backend: this.backend,
         max_concurrent: this.config.maxConcurrent,
         max_queue: this.config.maxQueue,
@@ -464,7 +503,7 @@ export class JobManager {
 
   async start(input: StartInput): Promise<StartResult> {
     if (this.shuttingDown)
-      throw new JobError('dsh_unavailable', 'the worker manager is shutting down');
+      throw new JobError('worker_unavailable', 'the worker manager is shutting down');
     const depth = Number(process.env.DSH_WORKERS_DEPTH ?? 0);
     if (!Number.isInteger(depth) || depth < 0) {
       throw new JobError('depth_exceeded', 'DSH_WORKERS_DEPTH is invalid');
@@ -524,6 +563,12 @@ export class JobManager {
         );
       }
       engine = this.engineFor(backend);
+      if (!engine.supportsResume) {
+        throw new JobError(
+          'resume_unavailable',
+          `${backend} does not support resuming a session yet`,
+        );
+      }
       profile = await engine.resolveProfile(original.profile);
       provider = original.provider;
       model = original.model;
@@ -554,6 +599,7 @@ export class JobManager {
         cwd = await this.resolveCwd(original.cwd);
       }
       access = original.access;
+      this.assertBackendAccess(backend, access);
       isolation = original.isolation;
       worktree = original.worktree;
       sessionId = original.sessionId;
@@ -572,13 +618,15 @@ export class JobManager {
     } else {
       backend = input.backend ?? this.backend;
       engine = this.engineFor(backend);
-      const fallbackProfile = backend === this.backend ? this.activeProfile : engine.defaultProfile;
+      const fallbackProfile =
+        backend === this.backend ? this.activeProfile : await this.fallbackProfile(engine);
       profile = await engine.resolveProfile(input.profile ?? fallbackProfile);
       const metadata = await engine.readProfileMetadata(profile);
       provider = metadata.provider;
       model = metadata.model;
       cwd = await this.resolveCwd(input.cwd);
       access = input.access ?? 'read-only';
+      this.assertBackendAccess(backend, access);
       isolation = input.isolation ?? (access === 'workspace-write' ? 'worktree' : 'none');
       if (isolation === 'worktree') {
         try {
@@ -692,10 +740,6 @@ export class JobManager {
         });
       }
     });
-  }
-
-  private ensureReady(profile: string): Promise<void> {
-    return this.activeEngine().ensureReady(profile);
   }
 
   private baseEnv(depth: number): Record<string, string> {
@@ -839,7 +883,9 @@ export class JobManager {
             ? 'turn_error'
             : 'nonzero_exit';
       await this.settle(job, 'failed', reason, {
-        errorMessage: signal ? `dsh exited from signal ${signal}` : `dsh exited ${code}`,
+        errorMessage: signal
+          ? `${job.backend} exited from signal ${signal}`
+          : `${job.backend} exited ${code}`,
         cleanTree: false,
       });
       return;
@@ -859,7 +905,14 @@ export class JobManager {
       return;
     }
     if (fold.turnEndKind !== 'completed') {
-      const reason: FailureReason = fold.turnEndKind ? 'turn_aborted' : 'no_turn_end';
+      const reason: FailureReason =
+        fold.turnEndKind === 'aborted'
+          ? 'turn_aborted'
+          : fold.turnEndKind === 'error' || fold.turnEndKind === 'length'
+            ? 'turn_error'
+            : fold.turnEndKind
+              ? 'turn_aborted'
+              : 'no_turn_end';
       await this.settle(job, 'failed', reason, {
         errorMessage: `turn ended with ${fold.turnEndKind ?? 'no turn_end event'}`,
         cleanTree: false,
@@ -934,13 +987,20 @@ export class JobManager {
     timeout_s?: number;
   }): Promise<Record<string, unknown>> {
     if (this.shuttingDown)
-      throw new JobError('dsh_unavailable', 'the worker manager is shutting down');
+      throw new JobError('worker_unavailable', 'the worker manager is shutting down');
     if (this.steering.has(input.job_id)) {
       throw new JobError('resume_unavailable', 'a steer is already in progress for this job');
     }
     this.steering.add(input.job_id);
     try {
       const original = await this.requireJob(input.job_id);
+      const engine = this.engineFor(original.backend ?? 'dsh');
+      if (!engine.supportsResume) {
+        throw new JobError(
+          'resume_unavailable',
+          `${original.backend} does not support steering yet`,
+        );
+      }
       let cancelled = false;
       if (!original.terminal) {
         try {

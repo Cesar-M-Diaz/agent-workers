@@ -36724,6 +36724,7 @@ async function loadConfig() {
     piModel: process.env.DSH_WORKERS_PI_MODEL?.trim() || "",
     piThinking: process.env.DSH_WORKERS_PI_THINKING?.trim() || "",
     piAgentDir: piAgentDir ? resolve2(expandHome(piAgentDir)) : "",
+    piAllowWrite: boolEnv("DSH_WORKERS_PI_ALLOW_WRITE"),
     allowedRoots,
     stateDir,
     worktreeRoot,
@@ -37484,7 +37485,7 @@ var DshEngine = class {
         });
         if (result.code !== 0) {
           throw new JobError(
-            "dsh_unavailable",
+            "worker_unavailable",
             `cannot initialize dsh profile ${profile}: ${result.stderr.trim()}`
           );
         }
@@ -37667,12 +37668,27 @@ var PiFold = class {
         const text = textBlocks(message.content);
         if (text) this.lastAssistantText = text;
         if (message.stopReason === "error") {
-          const error62 = text || "pi turn ended with error";
+          const error62 = typeof message.errorMessage === "string" && message.errorMessage.trim() || text || "pi turn ended with error";
           this.state.errorMessage = error62;
           this.emit({ type: "error", message: error62 });
         }
         return;
       }
+      case "auto_retry_start":
+        this.state.errorMessage = void 0;
+        return;
+      case "auto_retry_end": {
+        if (event.success === true) {
+          this.state.errorMessage = void 0;
+        } else if (typeof event.finalError === "string" && event.finalError.trim()) {
+          this.state.errorMessage = event.finalError;
+          this.emit({ type: "error", message: event.finalError });
+        }
+        return;
+      }
+      case "agent_end":
+        if (event.willRetry === true) this.state.errorMessage = void 0;
+        return;
       case "tool_execution_start": {
         const tool = typeof event.toolName === "string" ? event.toolName : "tool";
         this.state.toolCalls += 1;
@@ -37719,7 +37735,7 @@ var PiFold = class {
           this.state.turnEndKind = "aborted";
           return;
         }
-        if (this.state.turnEndKind === "completed" && this.lastAssistantText !== "") {
+        if ((this.state.turnEndKind === "completed" || this.state.turnEndKind === "length") && this.lastAssistantText !== "") {
           this.state.finalText = this.lastAssistantText;
           this.emit({ type: "final", text: this.lastAssistantText });
         }
@@ -37738,12 +37754,14 @@ var PiFold = class {
 };
 
 // src/engines/pi.ts
+var THINKING_LEVELS = /* @__PURE__ */ new Set(["off", "minimal", "low", "medium", "high", "xhigh", "max"]);
 function parseModel(value) {
   let text = value.trim();
   let thinking;
   const colon = text.lastIndexOf(":");
-  if (colon > 0 && /^[a-z]+$/i.test(text.slice(colon + 1))) {
-    thinking = text.slice(colon + 1);
+  const suffix = colon > 0 ? text.slice(colon + 1).toLowerCase() : "";
+  if (colon > 0 && THINKING_LEVELS.has(suffix)) {
+    thinking = suffix;
     text = text.slice(0, colon);
   }
   const slash = text.indexOf("/");
@@ -37766,7 +37784,8 @@ var PiEngine = class {
   id = "pi";
   label = "pi";
   defaultProfile = "default";
-  supportsResume = true;
+  // Resume/steer need the original job's session directory; that is phase 3.
+  supportsResume = false;
   version = "unavailable";
   profiles = {};
   async init() {
@@ -37804,11 +37823,23 @@ var PiEngine = class {
     return parseModel(profile);
   }
   async ensureReady() {
+    if (this.version === "unavailable") {
+      throw new JobError(
+        "pi_unavailable",
+        "pi is not available; check the pi binary and its configuration"
+      );
+    }
   }
-  async launch(spec, task) {
+  async launch(spec, _task) {
     const metadata = await this.readProfileMetadata(spec.profile);
     const modelArg = metadata.provider && metadata.model ? `${metadata.provider}/${metadata.model}` : metadata.model;
     const thinking = metadata.thinking ?? (spec.profile === "default" ? this.config.piThinking?.trim() : void 0);
+    if (thinking && !THINKING_LEVELS.has(thinking)) {
+      throw new JobError(
+        "unknown_profile",
+        `invalid pi thinking level ${thinking}; expected off, minimal, low, medium, high, xhigh or max`
+      );
+    }
     const args = ["--mode", "json"];
     if (modelArg) args.push("--model", modelArg);
     if (thinking) args.push("--thinking", thinking);
@@ -37824,7 +37855,6 @@ var PiEngine = class {
       spec.access === "workspace-write" ? "read,bash,edit,write" : "read,grep,find,ls"
     );
     if (spec.sessionId) args.push("--session-id", spec.sessionId);
-    args.push(task);
     const env = this.baseEnv(spec.depth);
     const agentDir = this.config.piAgentDir?.trim();
     if (agentDir) env.PI_CODING_AGENT_DIR = agentDir;
@@ -37832,7 +37862,7 @@ var PiEngine = class {
       command: this.config.piBin ?? "pi",
       args,
       env,
-      taskInput: "argv"
+      taskInput: "stdin"
     };
   }
   createFold(onEvent) {
@@ -37854,7 +37884,13 @@ var PiEngine = class {
         };
       }
       return result;
-    } catch {
+    } catch (err) {
+      if (err.code === "ENOENT") return {};
+      const message = err instanceof Error ? err.message : String(err);
+      process.stderr.write(
+        `${JSON.stringify({ event: "pi_profiles_unreadable", file: file2, error: message })}
+`
+      );
       return {};
     }
   }
@@ -37868,7 +37904,9 @@ function createEngines(config2, baseEnv) {
     dsh,
     pi,
     byId(id) {
-      return id === "dsh" ? dsh : pi;
+      if (id === "dsh") return dsh;
+      if (id === "pi") return pi;
+      throw new Error(`unknown worker backend: ${String(id)}`);
     }
   };
 }
@@ -38081,7 +38119,9 @@ function appendTail(current, chunk, maxBytes = MAX_STDERR) {
   return combined.slice(start + 1);
 }
 function costOf(job) {
-  return job.fold.state.costUsd ?? estimateCostUsd(job.provider, job.model, job.fold.state.usage);
+  const reported = job.fold.state.costUsd;
+  if (reported !== void 0 && reported > 0) return reported;
+  return estimateCostUsd(job.provider, job.model, job.fold.state.usage) ?? reported;
 }
 function persisted(job) {
   return {
@@ -38131,6 +38171,7 @@ function persisted(job) {
   };
 }
 function fromPersisted(saved, engine) {
+  const backend = saved.backend === "pi" ? "pi" : "dsh";
   const fold = engine.createFold(() => void 0);
   fold.state.sessionId = saved.sessionId;
   fold.state.malformedLines = saved.malformedLines;
@@ -38140,11 +38181,11 @@ function fromPersisted(saved, engine) {
   fold.state.lastTool = saved.lastTool;
   fold.state.turnEndKind = saved.turnEndKind;
   fold.state.usage = saved.usage;
-  fold.state.costUsd = saved.costUsd;
+  if (backend === "pi") fold.state.costUsd = saved.costUsd;
   return {
     id: saved.id,
     label: saved.label,
-    backend: saved.backend ?? "dsh",
+    backend,
     groupId: saved.groupId ?? saved.ownerId ?? "legacy",
     groupName: saved.groupName ?? "Legacy / ungrouped",
     ownerId: saved.ownerId ?? "unknown",
@@ -38221,13 +38262,33 @@ var JobManager = class {
     const initialized = await Promise.all([this.engines.dsh.init(), this.engines.pi.init()]);
     const active = this.activeEngine();
     const profiles = await active.availableProfiles();
-    if (!process.env.DSH_WORKERS_PROFILE?.trim()) {
+    const configuredProfile = process.env.DSH_WORKERS_PROFILE?.trim();
+    if (!configuredProfile) {
       if (!profiles.includes(this.activeProfile) && profiles.includes("headless")) {
         this.activeProfile = "headless";
       }
-      if (!profiles.includes(this.activeProfile)) this.activeProfile = active.defaultProfile;
+      if (!profiles.includes(this.activeProfile)) {
+        this.activeProfile = await this.fallbackProfile(active);
+      }
     }
-    this.activeProfile = await active.resolveProfile(this.activeProfile);
+    try {
+      this.activeProfile = await active.resolveProfile(this.activeProfile);
+    } catch (err) {
+      if (configuredProfile && err instanceof JobError && err.code === "unknown_profile") {
+        this.activeProfile = await active.resolveProfile(await this.fallbackProfile(active));
+        process.stderr.write(
+          `${JSON.stringify({
+            event: "profile_fallback",
+            backend: this.backend,
+            requested: configuredProfile,
+            used: this.activeProfile
+          })}
+`
+        );
+      } else {
+        throw err;
+      }
+    }
     this.engineVersion = this.backend === "dsh" ? initialized[0].version : initialized[1].version;
     await this.loadPreviousJobs();
     this.startWatchdog();
@@ -38243,6 +38304,20 @@ var JobManager = class {
   }
   activeEngine() {
     return this.engines.byId(this.backend);
+  }
+  async fallbackProfile(engine) {
+    const profiles = await engine.availableProfiles();
+    if (profiles.includes(engine.defaultProfile)) return engine.defaultProfile;
+    if (profiles.includes("headless")) return "headless";
+    return engine.defaultProfile;
+  }
+  assertBackendAccess(backend, access2) {
+    if (backend === "pi" && access2 === "workspace-write" && !this.config.piAllowWrite) {
+      throw new JobError(
+        "pi_write_disabled",
+        "pi workers are read-only by default; set pi_allow_write (AGENT_WORKERS_PI_ALLOW_WRITE=1) to allow workspace writes"
+      );
+    }
   }
   engineFor(id) {
     return this.engines.byId(id);
@@ -38283,7 +38358,8 @@ var JobManager = class {
       try {
         const saved = JSON.parse(await readFile7(jobPath, "utf8"));
         if (!saved?.id) continue;
-        const job = fromPersisted(saved, this.engineFor(saved.backend ?? "dsh"));
+        const backend = saved.backend === "pi" ? "pi" : "dsh";
+        const job = fromPersisted(saved, this.engineFor(backend));
         if (!job.terminal) {
           if (job.pid !== void 0 && job.pgidStartTime !== void 0) {
             const currentStart = await readStartTime(job.pid);
@@ -38309,7 +38385,7 @@ var JobManager = class {
     const jobs = this.selectJobs(jobIds).map((job) => this.summary(job));
     return {
       server: {
-        dsh_version: this.engineVersion,
+        engine_version: this.engineVersion,
         backend: this.backend,
         max_concurrent: this.config.maxConcurrent,
         max_queue: this.config.maxQueue,
@@ -38353,7 +38429,7 @@ var JobManager = class {
   }
   async start(input2) {
     if (this.shuttingDown)
-      throw new JobError("dsh_unavailable", "the worker manager is shutting down");
+      throw new JobError("worker_unavailable", "the worker manager is shutting down");
     const depth = Number(process.env.DSH_WORKERS_DEPTH ?? 0);
     if (!Number.isInteger(depth) || depth < 0) {
       throw new JobError("depth_exceeded", "DSH_WORKERS_DEPTH is invalid");
@@ -38405,6 +38481,12 @@ var JobManager = class {
         );
       }
       engine = this.engineFor(backend);
+      if (!engine.supportsResume) {
+        throw new JobError(
+          "resume_unavailable",
+          `${backend} does not support resuming a session yet`
+        );
+      }
       profile = await engine.resolveProfile(original.profile);
       provider = original.provider;
       model = original.model;
@@ -38435,6 +38517,7 @@ var JobManager = class {
         cwd = await this.resolveCwd(original.cwd);
       }
       access2 = original.access;
+      this.assertBackendAccess(backend, access2);
       isolation = original.isolation;
       worktree = original.worktree;
       sessionId = original.sessionId;
@@ -38453,13 +38536,14 @@ var JobManager = class {
     } else {
       backend = input2.backend ?? this.backend;
       engine = this.engineFor(backend);
-      const fallbackProfile = backend === this.backend ? this.activeProfile : engine.defaultProfile;
+      const fallbackProfile = backend === this.backend ? this.activeProfile : await this.fallbackProfile(engine);
       profile = await engine.resolveProfile(input2.profile ?? fallbackProfile);
       const metadata = await engine.readProfileMetadata(profile);
       provider = metadata.provider;
       model = metadata.model;
       cwd = await this.resolveCwd(input2.cwd);
       access2 = input2.access ?? "read-only";
+      this.assertBackendAccess(backend, access2);
       isolation = input2.isolation ?? (access2 === "workspace-write" ? "worktree" : "none");
       if (isolation === "worktree") {
         try {
@@ -38564,9 +38648,6 @@ var JobManager = class {
         });
       }
     });
-  }
-  ensureReady(profile) {
-    return this.activeEngine().ensureReady(profile);
   }
   baseEnv(depth) {
     const env = {};
@@ -38696,7 +38777,7 @@ var JobManager = class {
     if (code !== 0) {
       const reason = fold.turnEndKind === "aborted" ? "turn_aborted" : fold.turnEndKind ? "turn_error" : "nonzero_exit";
       await this.settle(job, "failed", reason, {
-        errorMessage: signal ? `dsh exited from signal ${signal}` : `dsh exited ${code}`,
+        errorMessage: signal ? `${job.backend} exited from signal ${signal}` : `${job.backend} exited ${code}`,
         cleanTree: false
       });
       return;
@@ -38716,7 +38797,7 @@ var JobManager = class {
       return;
     }
     if (fold.turnEndKind !== "completed") {
-      const reason = fold.turnEndKind ? "turn_aborted" : "no_turn_end";
+      const reason = fold.turnEndKind === "aborted" ? "turn_aborted" : fold.turnEndKind === "error" || fold.turnEndKind === "length" ? "turn_error" : fold.turnEndKind ? "turn_aborted" : "no_turn_end";
       await this.settle(job, "failed", reason, {
         errorMessage: `turn ended with ${fold.turnEndKind ?? "no turn_end event"}`,
         cleanTree: false
@@ -38777,13 +38858,20 @@ var JobManager = class {
   }
   async steer(input2) {
     if (this.shuttingDown)
-      throw new JobError("dsh_unavailable", "the worker manager is shutting down");
+      throw new JobError("worker_unavailable", "the worker manager is shutting down");
     if (this.steering.has(input2.job_id)) {
       throw new JobError("resume_unavailable", "a steer is already in progress for this job");
     }
     this.steering.add(input2.job_id);
     try {
       const original = await this.requireJob(input2.job_id);
+      const engine = this.engineFor(original.backend ?? "dsh");
+      if (!engine.supportsResume) {
+        throw new JobError(
+          "resume_unavailable",
+          `${original.backend} does not support steering yet`
+        );
+      }
       let cancelled = false;
       if (!original.terminal) {
         try {

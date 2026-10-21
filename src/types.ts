@@ -26,7 +26,7 @@ export type FailureReason =
   | 'cwd_outside_roots'
   | 'write_conflict'
   | 'resume_unavailable'
-  | 'dsh_unavailable'
+  | 'worker_unavailable'
   | 'already_settled'
   | 'not_terminal'
   | 'worktree_error';
@@ -136,7 +136,7 @@ export interface StartResult {
 
 export interface StatusOutput {
   server: {
-    dsh_version: string;
+    engine_version: string;
     backend: 'dsh' | 'pi';
     max_concurrent: number;
     max_queue: number;

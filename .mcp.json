@@ -13,6 +13,7 @@
         "DSH_WORKERS_PI_THINKING": "${user_config.pi_thinking}",
         "DSH_WORKERS_PI_AGENT_DIR": "${user_config.pi_agent_dir}",
         "DSH_WORKERS_PI_PROFILES_FILE": "${user_config.pi_profiles_file}",
+        "DSH_WORKERS_PI_ALLOW_WRITE": "${user_config.pi_allow_write}",
         "DSH_WORKERS_USE_DSH_CREDENTIALS": "${user_config.use_dsh_credentials}",
         "DSH_WORKERS_STATE_DIR": "${user_config.state_dir}",
         "DSH_WORKERS_MAX_CONCURRENT": "${user_config.max_concurrent}",
