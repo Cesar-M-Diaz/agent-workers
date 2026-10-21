@@ -628,3 +628,7 @@ hooks module is reported there with its reason.
   subagents. They do not appear in either harness's native subagent panel.
 - The dashboard is a monitor, not the DSH TUI or a live attach into a worker
   process. Use `dsh_events` or the dashboard for visibility.
+
+## License
+
+[MIT](LICENSE) © 2026 Cesar-M-Diaz

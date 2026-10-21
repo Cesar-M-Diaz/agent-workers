@@ -3,6 +3,7 @@
   "version": "0.3.4",
   "private": true,
   "description": "Claude Code plugin and marketplace for running DeepSeek Harness (dsh) headless workers in parallel",
+  "license": "MIT",
   "type": "module",
   "bin": {
     "dsh-workers": "./dist/server.js",
