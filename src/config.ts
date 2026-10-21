@@ -125,18 +125,24 @@ function splitList(raw: string | undefined): string[] {
     .filter(Boolean);
 }
 
+/** An env path, or undefined when unset or blank (plugin userConfig passes ""). */
+function pathEnv(name: string): string | undefined {
+  const raw = process.env[name]?.trim();
+  return raw ? raw : undefined;
+}
+
 export async function resolveWorkerStateDir(): Promise<string> {
-  return ensurePrivateDir(process.env.DSH_WORKERS_STATE_DIR ?? defaultStateDir(), 'state');
+  return ensurePrivateDir(pathEnv('DSH_WORKERS_STATE_DIR') ?? defaultStateDir(), 'state');
 }
 
 export async function loadConfig(): Promise<Config> {
   const stateDir = await resolveWorkerStateDir();
   const worktreeRoot = await ensurePrivateDir(
-    process.env.DSH_WORKERS_WORKTREE_ROOT ?? join(stateDir, 'worktrees'),
+    pathEnv('DSH_WORKERS_WORKTREE_ROOT') ?? join(stateDir, 'worktrees'),
     'worktrees',
   );
   const dshHome = await ensurePrivateDir(
-    process.env.DSH_WORKERS_DSH_HOME ?? join(stateDir, 'dsh-home'),
+    pathEnv('DSH_WORKERS_DSH_HOME') ?? join(stateDir, 'dsh-home'),
     'dsh-home',
   );
 

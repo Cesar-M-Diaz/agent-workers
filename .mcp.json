@@ -1,0 +1,17 @@
+{
+  "mcpServers": {
+    "dsh-workers": {
+      "type": "stdio",
+      "command": "node",
+      "args": ["${CLAUDE_PLUGIN_ROOT}/plugin-dist/server.mjs"],
+      "env": {
+        "DSH_WORKERS_ALLOWED_ROOTS": "${user_config.allowed_roots}",
+        "DSH_WORKERS_DSH_BIN": "${user_config.dsh_bin}",
+        "DSH_WORKERS_USE_DSH_CREDENTIALS": "${user_config.use_dsh_credentials}",
+        "DSH_WORKERS_STATE_DIR": "${user_config.state_dir}",
+        "DSH_WORKERS_MAX_CONCURRENT": "${user_config.max_concurrent}",
+        "DSH_WORKERS_PROFILE": "${user_config.profile}"
+      }
+    }
+  }
+}

@@ -6,7 +6,7 @@
     "useIgnoreFile": true
   },
   "files": {
-    "includes": ["**", "!**/dist", "!claude/mods/dsh-workers-pane"]
+    "includes": ["**", "!**/dist", "!plugin-dist", "!hooks", "!tests", "!types"]
   },
   "formatter": {
     "enabled": true,

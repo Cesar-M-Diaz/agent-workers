@@ -2,17 +2,22 @@
   "name": "dsh-workers",
   "version": "0.3.2",
   "private": true,
-  "description": "Standalone MCP server, live dashboard, and Claude Code commands for running DeepSeek Harness (dsh) headless workers in parallel",
+  "description": "Claude Code plugin and marketplace for running DeepSeek Harness (dsh) headless workers in parallel",
   "type": "module",
   "bin": {
     "dsh-workers": "./dist/server.js",
     "dsh-workers-ui": "./dist/ui.js"
   },
   "files": [
+    ".claude-plugin",
+    ".mcp.json",
+    "commands",
     "dist",
-    "skill",
-    "claude",
-    "scripts"
+    "hooks",
+    "plugin-dist",
+    "scripts",
+    "skills",
+    "types"
   ],
   "engines": {
     "node": ">=24"
@@ -24,13 +29,14 @@
   },
   "scripts": {
     "build": "tsc -b && node scripts/copy-assets.mjs",
+    "bundle": "node scripts/bundle.mjs",
+    "bundle:check": "node scripts/bundle.mjs --check",
     "typecheck": "tsc -b",
     "start": "node dist/server.js",
     "ui": "node dist/ui.js",
-    "test": "tsc -b && node scripts/copy-assets.mjs && vitest run --exclude 'claude/**'",
+    "test": "tsc -b && node scripts/copy-assets.mjs && vitest run --exclude 'tests/**'",
     "lint": "biome check .",
-    "format": "biome format --write .",
-    "install:claude-commands": "bash scripts/install-claude-commands.sh"
+    "format": "biome format --write ."
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "1.31.0",
@@ -39,6 +45,7 @@
   "devDependencies": {
     "@biomejs/biome": "2.5.15",
     "@types/node": "^24.0.0",
+    "esbuild": "^0.28.2",
     "typescript": "7.0.2",
     "vitest": "5.0.3"
   }

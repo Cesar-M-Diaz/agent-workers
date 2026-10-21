@@ -1,0 +1,59 @@
+{
+  "name": "dsh-workers",
+  "version": "0.3.2",
+  "description": "Run DeepSeek Harness (dsh) headless workers in parallel, with a live dashboard, a cleanup-aware skill, slash commands, and a native pane.",
+  "author": {
+    "name": "Cesar-M-Diaz"
+  },
+  "homepage": "https://github.com/Cesar-M-Diaz/dsh-workers",
+  "repository": "https://github.com/Cesar-M-Diaz/dsh-workers",
+  "license": "MIT",
+  "keywords": ["dsh", "deepseek", "workers", "parallel", "mcp", "dashboard"],
+  "types": "./types/index.d.ts",
+  "userConfig": {
+    "allowed_roots": {
+      "type": "string",
+      "title": "Allowed project roots",
+      "description": "Colon- or comma-separated directories workers may use. Empty uses the MCP server's working directory.",
+      "required": false,
+      "default": ""
+    },
+    "dsh_bin": {
+      "type": "string",
+      "title": "dsh binary",
+      "description": "Absolute path to the dsh executable. Empty uses dsh from PATH.",
+      "required": false,
+      "default": ""
+    },
+    "state_dir": {
+      "type": "string",
+      "title": "State directory",
+      "description": "Where job records and logs are kept. Empty uses $DSH_WORKERS_STATE_DIR, then $XDG_STATE_HOME/dsh-workers, then ~/.local/state/dsh-workers.",
+      "required": false,
+      "default": ""
+    },
+    "use_dsh_credentials": {
+      "type": "boolean",
+      "title": "Read credentials from the DSH store",
+      "description": "Read DEEPSEEK_API_KEY, OPENROUTER_CHAT_API_KEY, and OPENCODE_GO_API_KEY from ~/.dsh/.credentials.yaml when they are not already in the worker environment.",
+      "required": false,
+      "default": false
+    },
+    "max_concurrent": {
+      "type": "number",
+      "title": "Maximum concurrent workers",
+      "description": "Hard limit on running dsh processes (1 to 8).",
+      "required": false,
+      "default": 3,
+      "min": 1,
+      "max": 8
+    },
+    "profile": {
+      "type": "string",
+      "title": "Starting DSH profile",
+      "description": "Profile for new workers. Empty uses work-openrouter, falling back to headless.",
+      "required": false,
+      "default": ""
+    }
+  }
+}
