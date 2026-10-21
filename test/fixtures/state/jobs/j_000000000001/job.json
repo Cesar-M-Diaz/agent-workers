@@ -1,0 +1,52 @@
+{
+  "schemaVersion": 1,
+  "id": "j_000000000001",
+  "backend": "dsh",
+  "groupId": "g-alpha",
+  "groupName": "alpha-project",
+  "ownerId": "owner-live",
+  "cwd": "/fixture/state/worktrees/j_000000000001",
+  "profile": "personal-deepseek",
+  "provider": "deepseek-official",
+  "model": "deepseek-flash",
+  "access": "workspace-write",
+  "isolation": "worktree",
+  "timeoutMs": 1200000,
+  "createdAt": "2026-10-21T09:00:00.000Z",
+  "stderrTail": "",
+  "alerts": [
+    {
+      "kind": "stalled",
+      "message": "no events for 2m",
+      "since": "2026-10-21T09:03:00.000Z"
+    }
+  ],
+  "malformedLines": 1,
+  "eventsCount": 9,
+  "toolCalls": 2,
+  "steps": 3,
+  "eventsPath": "/fixture/state/jobs/j_000000000001/events.ndjson",
+  "finalPath": "/fixture/state/jobs/j_000000000001/final.md",
+  "stderrPath": "/fixture/state/jobs/j_000000000001/stderr.log",
+  "jobPath": "/fixture/state/jobs/j_000000000001/job.json",
+  "sessionDir": "/fixture/state/jobs/j_000000000001",
+  "label": "refactor auth (running, worktree, stalled alert)",
+  "status": "running",
+  "startedAt": "2026-10-21T09:00:05.000Z",
+  "pid": 999999,
+  "pgidStartTime": "1",
+  "sessionId": "s-1",
+  "worktree": {
+    "path": "/fixture/state/worktrees/j_000000000001",
+    "branch": "dsh/j_000000000001",
+    "baseCommit": "a87c3af7590530248a9a3a36aea0aa954e0c43ba",
+    "repoRoot": "/fixture/repo"
+  },
+  "lastTool": "bash",
+  "usage": {
+    "inputTokens": 1200,
+    "outputTokens": 300,
+    "totalTokens": 1500
+  },
+  "costUsd": 0.0021
+}

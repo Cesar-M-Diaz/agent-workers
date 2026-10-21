@@ -1,0 +1,7 @@
+{"type":"session","sessionId":"s-3"}
+{"type":"status","phase":"step_start"}
+{"type":"tool_call","callId":"p1","tool":"grep","input":{"pattern":"TODO"}}
+{"type":"tool_result","callId":"p1","status":"completed"}
+{"type":"status","phase":"step_end","usage":{"inputTokens":10,"outputTokens":2}}
+{"type":"status","phase":"turn_end","reason":"completed"}
+{"type":"final","text":"Found 3 TODOs."}
