@@ -6,7 +6,15 @@
     "useIgnoreFile": true
   },
   "files": {
-    "includes": ["**", "!**/dist", "!plugin-dist", "!hooks", "!tests", "!types"]
+    "includes": [
+      "**",
+      "!**/dist",
+      "!plugin-dist",
+      "!hooks",
+      "!tests",
+      "!types",
+      "!test/fixtures/state"
+    ]
   },
   "formatter": {
     "enabled": true,

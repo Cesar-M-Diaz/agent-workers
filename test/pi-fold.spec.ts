@@ -53,7 +53,84 @@ describe('PiFold', () => {
       tool: 'bash',
       input: { command: 'printf hi' },
     });
+    expect(emitted.find((event) => event.type === 'tool_result')).toEqual({
+      type: 'tool_result',
+      callId: 'call_1',
+      status: 'completed',
+      result: 'hi',
+    });
     expect(emitted.at(-1)).toEqual({ type: 'final', text: 'hi' });
+  });
+
+  it('preserves multiline tool output, structured fallback and absent output', () => {
+    const emitted: Array<Record<string, unknown>> = [];
+    const fold = new PiFold((line) => emitted.push(JSON.parse(line)));
+    const results = [
+      {
+        content: [
+          { type: 'text', text: 'first\n  indented' },
+          { type: 'text', text: 'second' },
+        ],
+      },
+      { content: [{ type: 'text', text: '' }] },
+      { details: { exitCode: 1, error: 'failed' } },
+      'plain\noutput',
+      false,
+      0,
+      undefined,
+    ];
+    results.forEach((result, index) => {
+      fold.push(
+        Buffer.from(
+          `${JSON.stringify({
+            type: 'tool_execution_end',
+            toolCallId: `call_${index}`,
+            result,
+            isError: index === 2,
+          })}\n`,
+        ),
+      );
+    });
+    const state = fold.end();
+    expect(emitted.map((event) => event.result)).toEqual([
+      'first\n  indented\nsecond',
+      '',
+      JSON.stringify(results[2]),
+      'plain\noutput',
+      'false',
+      '0',
+      undefined,
+    ]);
+    expect(emitted[2]).toMatchObject({ callId: 'call_2', status: 'failed' });
+    expect(emitted[6]).not.toHaveProperty('result');
+    expect(state.recentToolResults).toEqual([
+      'completed',
+      'completed',
+      'failed',
+      'completed',
+      'completed',
+      'completed',
+      'completed',
+    ]);
+    expect(state.usage).toBeUndefined();
+    expect(state.errorMessage).toBeUndefined();
+  });
+
+  it('bounds large text and structured results without splitting UTF-8 characters', () => {
+    const emitted: Array<Record<string, unknown>> = [];
+    const fold = new PiFold((line) => emitted.push(JSON.parse(line)));
+    for (const result of [
+      { content: [{ type: 'text', text: '🙂'.repeat(32 * 1024) }] },
+      { details: { output: '界'.repeat(32 * 1024) } },
+    ])
+      fold.push(Buffer.from(`${JSON.stringify({ type: 'tool_execution_end', result })}\n`));
+    fold.end();
+    for (const event of emitted) {
+      const result = event.result as string;
+      expect(Buffer.byteLength(result, 'utf8')).toBeLessThanOrEqual(32 * 1024);
+      expect(result).toMatch(/\n… \[truncated\]$/);
+      expect(result).not.toContain('\ufffd');
+    }
   });
 
   it('does not emit a final answer for an aborted run', () => {

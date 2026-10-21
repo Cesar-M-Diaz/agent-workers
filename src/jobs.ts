@@ -4,8 +4,26 @@ import { createWriteStream, type Dirent, type WriteStream } from 'node:fs';
 import { access, mkdir, readdir, readFile, rename, rm, stat, writeFile } from 'node:fs/promises';
 import { basename, join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
-import { deleteJobRecord, JobAdminError, pruneExpiredJobs } from './admin.js';
+import {
+  type BusyKind,
+  busyKinds,
+  deleteJobRecord,
+  isActiveStatus,
+  JobAdminError,
+  type JobResources,
+  pruneExpiredJobs,
+  readStoredJobs,
+  resourcesOf,
+} from './admin.js';
 import type { Config } from './config.js';
+import {
+  CONTROL_PROTOCOL,
+  type ControlEndpoint,
+  liveOwnerIds,
+  pruneStaleDescriptors,
+  removeDescriptor,
+  writeDescriptor,
+} from './control/descriptor.js';
 import { createEngines } from './engines/index.js';
 import type { Engine, EngineId, Fold } from './engines/types.js';
 import { JobError } from './errors.js';
@@ -28,6 +46,7 @@ import type {
   WorktreeChanges,
   WorktreeInfo,
 } from './types.js';
+import { VERSION } from './version.js';
 import { computeAlerts, type WatchdogOptions } from './watchdog.js';
 import { cleanupWorktree, computeWorktreeChanges, createWorktree } from './worktree.js';
 
@@ -94,6 +113,7 @@ interface Job {
   changes?: WorktreeChanges;
   cleaned?: boolean;
   progressPersistScheduled?: boolean;
+  writeChain?: Promise<void>;
   eventsPath: string;
   finalPath: string;
   stderrPath: string;
@@ -296,6 +316,9 @@ export class JobManager {
   private engines!: ReturnType<typeof createEngines>;
   private readonly backend: EngineId;
   private activeProfile: string;
+  private pidStart?: string;
+  private control: ControlEndpoint | null = null;
+  private leaseReady = false;
 
   constructor(private readonly config: Config) {
     this.backend = config.backend ?? 'dsh';
@@ -308,12 +331,65 @@ export class JobManager {
       (this.backend === 'pi' ? (config.piDefaultProfile ?? 'default') : 'work-openrouter');
   }
 
+  get owner(): string {
+    return this.ownerId;
+  }
+
+  private async writeLease(): Promise<void> {
+    try {
+      await writeDescriptor(this.config.stateDir, {
+        protocol: CONTROL_PROTOCOL,
+        owner_id: this.ownerId,
+        pid: process.pid,
+        pid_start: this.pidStart,
+        started_at: this.ownerStartedAt,
+        version: VERSION,
+        state_dir: this.config.stateDir,
+        control: this.control,
+        ready: this.leaseReady,
+      });
+    } catch (err) {
+      this.leaseError(err);
+    }
+  }
+
+  private leaseError(err: unknown): void {
+    process.stderr.write(
+      `${JSON.stringify({
+        event: 'lease_error',
+        message: err instanceof Error ? err.message : String(err),
+      })}\n`,
+    );
+  }
+
+  async publishControl(control: ControlEndpoint | null): Promise<void> {
+    this.control = control;
+    await this.writeLease();
+  }
+
   async init(): Promise<void> {
     await mkdir(join(this.config.stateDir, 'jobs'), { recursive: true, mode: 0o700 });
+    this.pidStart = await readStartTime(process.pid);
+    await this.writeLease();
+    try {
+      await this.recover();
+    } catch (err) {
+      // A server that fails to start must not leave its lease behind.
+      await removeDescriptor(this.config.stateDir, this.ownerId).catch(() => undefined);
+      throw err;
+    }
+    this.leaseReady = true;
+    await this.writeLease();
+    await pruneStaleDescriptors(this.config.stateDir);
+    this.startWatchdog();
+  }
+
+  private async recover(): Promise<void> {
     await pruneExpiredJobs(
       this.config.stateDir,
       this.config.retentionDays,
       this.config.worktreeRoot,
+      this.ownerId,
     );
     this.engines = createEngines(this.config, (depth) => this.baseEnv(depth));
     const initialized = await Promise.all([this.engines.dsh.init(), this.engines.pi.init()]);
@@ -347,7 +423,6 @@ export class JobManager {
     }
     this.engineVersion = this.backend === 'dsh' ? initialized[0].version : initialized[1].version;
     await this.loadPreviousJobs();
-    this.startWatchdog();
   }
 
   private startWatchdog(): void {
@@ -422,6 +497,7 @@ export class JobManager {
     } catch {
       return;
     }
+    const liveOwners = await liveOwnerIds(this.config.stateDir, this.ownerId);
     for (const entry of entries) {
       if (!entry.isDirectory()) continue;
       const jobPath = join(root, entry.name, 'job.json');
@@ -430,6 +506,11 @@ export class JobManager {
         if (!saved?.id) continue;
         const backend: EngineId = saved.backend === 'pi' ? 'pi' : 'dsh';
         const job = fromPersisted(saved, this.engineFor(backend));
+        // A different manager that is still alive owns this job: leave its
+        // process and job.json alone and do not expose it through this manager.
+        if (!job.terminal && saved.ownerId !== undefined && liveOwners.has(saved.ownerId)) {
+          continue;
+        }
         if (!job.terminal) {
           if (job.pid !== undefined && job.pgidStartTime !== undefined) {
             const currentStart = await readStartTime(job.pid);
@@ -1237,12 +1318,57 @@ export class JobManager {
     return output;
   }
 
+  private jobResources(job: Job): JobResources {
+    return {
+      id: job.id,
+      status: job.status,
+      worktreePath: job.worktree?.path,
+      sessionId: job.sessionId ?? job.fold.state.sessionId,
+      sessionDir: job.sessionDir,
+    };
+  }
+
+  /**
+   * Busy checks combine this manager's jobs with foreign jobs that only exist
+   * on disk. A job never blocks itself, and terminal jobs hold no resources.
+   */
+  private async busyAgainst(job: Job): Promise<Map<BusyKind, string>> {
+    const target = this.jobResources(job);
+    const busy = new Map<BusyKind, string>();
+    const consider = (other: JobResources): void => {
+      if (other.id === job.id || !isActiveStatus(other.status)) return;
+      for (const kind of busyKinds(target, other)) {
+        if (!busy.has(kind)) busy.set(kind, other.id);
+      }
+    };
+    const seen = new Set<string>([job.id]);
+    for (const other of this.jobs.values()) {
+      if (seen.has(other.id)) continue;
+      seen.add(other.id);
+      consider(this.jobResources(other));
+    }
+    for (const stored of await readStoredJobs(this.config.stateDir)) {
+      if (seen.has(stored.id)) continue;
+      seen.add(stored.id);
+      consider(resourcesOf(stored.id, stored.job));
+    }
+    return busy;
+  }
+
   async cleanup(
     jobId: string,
     discardChanges: boolean,
   ): Promise<{ job_id: string; worktree: string; branch_deleted: boolean }> {
     const job = await this.requireJob(jobId);
     if (!job.terminal) throw new JobError('not_terminal', 'cannot clean up a non-terminal job');
+    const busy = await this.busyAgainst(job);
+    const worktreeOwner = busy.get('worktree_busy');
+    if (worktreeOwner && job.worktree) {
+      throw new JobError(
+        'worktree_busy',
+        `job ${worktreeOwner} still uses worktree ${job.worktree.path}`,
+      );
+    }
     if (!job.worktree || job.cleaned)
       return { job_id: job.id, worktree: 'none', branch_deleted: false };
     const result = await cleanupWorktree(job.worktree, discardChanges, this.config.worktreeRoot);
@@ -1261,13 +1387,19 @@ export class JobManager {
   ): Promise<{ job_id: string; deleted: true; worktree: string; branch_deleted: boolean }> {
     const job = await this.requireJob(jobId);
     if (!job.terminal) throw new JobError('not_terminal', 'cannot delete a non-terminal job');
-    const busy = [...this.jobs.values()].find(
-      (other) => other.id !== job.id && !other.terminal && other.sessionDir === job.sessionDir,
-    );
-    if (busy) {
+    const busy = await this.busyAgainst(job);
+    const worktreeOwner = busy.get('worktree_busy');
+    if (worktreeOwner && job.worktree) {
+      throw new JobError(
+        'worktree_busy',
+        `job ${worktreeOwner} still uses worktree ${job.worktree.path}`,
+      );
+    }
+    const sessionOwner = busy.get('session_busy');
+    if (sessionOwner) {
       throw new JobError(
         'session_busy',
-        `job ${busy.id} still uses session directory ${job.sessionDir}`,
+        `job ${sessionOwner} still uses session ${job.sessionDir || job.sessionId}`,
       );
     }
     try {
@@ -1283,6 +1415,30 @@ export class JobManager {
     }
   }
 
+  async controlFacts(jobId: string): Promise<
+    | {
+        owner_id: string;
+        owned: boolean;
+        worktree_busy: boolean;
+        session_busy: boolean;
+        supports_resume: boolean;
+        cleaned: boolean;
+      }
+    | undefined
+  > {
+    const job = this.jobs.get(jobId);
+    if (!job) return undefined;
+    const busy = await this.busyAgainst(job);
+    return {
+      owner_id: job.ownerId,
+      owned: job.ownerId === this.ownerId,
+      worktree_busy: busy.has('worktree_busy'),
+      session_busy: busy.has('session_busy'),
+      supports_resume: this.engineFor(job.backend).supportsResume,
+      cleaned: job.cleaned === true || job.worktree?.cleaned === true,
+    };
+  }
+
   async shutdown(): Promise<void> {
     if (this.shuttingDown) return;
     this.shuttingDown = true;
@@ -1290,19 +1446,27 @@ export class JobManager {
       clearInterval(this.watchdogTimer);
       this.watchdogTimer = undefined;
     }
-    for (const job of this.queue.splice(0)) {
-      await this.settle(job, 'interrupted', 'interrupted', { cleanTree: false });
-    }
-    for (const id of [...this.running]) {
-      const job = this.jobs.get(id);
-      if (!job || job.terminal) continue;
-      if (job.child) {
-        const killed = await killTree(job.child);
-        job.killedPids = killed.pids;
-        job.survivors = killed.survivors;
-        await waitForExit(job.child, 3_000);
+    try {
+      for (const job of this.queue.splice(0)) {
+        await this.settle(job, 'interrupted', 'interrupted', { cleanTree: false });
       }
-      await this.settle(job, 'interrupted', 'interrupted', { cleanTree: false });
+      for (const id of [...this.running]) {
+        const job = this.jobs.get(id);
+        if (!job || job.terminal) continue;
+        if (job.child) {
+          const killed = await killTree(job.child);
+          job.killedPids = killed.pids;
+          job.survivors = killed.survivors;
+          await waitForExit(job.child, 3_000);
+        }
+        await this.settle(job, 'interrupted', 'interrupted', { cleanTree: false });
+      }
+    } finally {
+      try {
+        await removeDescriptor(this.config.stateDir, this.ownerId);
+      } catch (err) {
+        this.leaseError(err);
+      }
     }
   }
 
@@ -1364,11 +1528,13 @@ export class JobManager {
             path: job.worktree.path,
             branch: job.worktree.branch,
             base_commit: job.worktree.baseCommit,
-            cleaned: job.cleaned === true,
+            repo_root: job.worktree.repoRoot,
+            cleaned: job.cleaned === true || job.worktree.cleaned === true,
           }
         : undefined,
       created_at: job.createdAt,
       started_at: job.startedAt,
+      finished_at: job.finishedAt,
       elapsed_s: Math.max(0, Math.round(elapsedMs / 1000)),
       queue_position: job.status === 'queued' ? this.queue.indexOf(job) + 1 : undefined,
       session_id: job.sessionId ?? fold.sessionId,
@@ -1380,9 +1546,12 @@ export class JobManager {
         ? Math.max(0, Math.round((Date.now() - fold.lastEventAt) / 1000))
         : undefined,
       malformed_lines: fold.malformedLines,
+      events_count: fold.eventsCount,
       usage: fold.usage,
       cost_usd: costOf(job),
       alerts: job.alerts,
+      resume_of: job.resumeOf,
+      steered_from: job.steeredFrom,
     };
   }
 
@@ -1429,15 +1598,24 @@ export class JobManager {
    * Write job.json atomically: readers (the dashboard, the pane, a restarted
    * server) poll it while a job runs and must never see a half-written file.
    */
-  private async writeJob(job: Job): Promise<void> {
-    const tmpPath = `${job.jobPath}.${process.pid}.${++this.writeSeq}.tmp`;
-    try {
-      await writeFile(tmpPath, JSON.stringify(persisted(job), null, 2), { mode: 0o600 });
-      await rename(tmpPath, job.jobPath);
-    } catch (err) {
-      await rm(tmpPath, { force: true }).catch(() => undefined);
-      throw err;
-    }
+  /**
+   * Writes are chained per job and snapshot the job when their turn comes, so
+   * a slow progress write can never land after (and overwrite) the final one.
+   */
+  private writeJob(job: Job): Promise<void> {
+    const write = async (): Promise<void> => {
+      const tmpPath = `${job.jobPath}.${process.pid}.${++this.writeSeq}.tmp`;
+      try {
+        await writeFile(tmpPath, JSON.stringify(persisted(job), null, 2), { mode: 0o600 });
+        await rename(tmpPath, job.jobPath);
+      } catch (err) {
+        await rm(tmpPath, { force: true }).catch(() => undefined);
+        throw err;
+      }
+    };
+    const next = (job.writeChain ?? Promise.resolve()).then(write, write);
+    job.writeChain = next.catch(() => undefined);
+    return next;
   }
 
   private async eventsTail(path: string): Promise<string | undefined> {

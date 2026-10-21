@@ -16,6 +16,7 @@ function config(overrides: Partial<Config> = {}): Config {
     stateDir: '/tmp/agent-workers-fixture-state',
     worktreeRoot: '/tmp/agent-workers-fixture-worktrees',
     dshHome: '/tmp/agent-workers-fixture-dsh-home',
+    control: true,
     maxConcurrent: 1,
     maxQueue: 1,
     defaultTimeoutMs: 60_000,

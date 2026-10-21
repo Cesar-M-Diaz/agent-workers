@@ -1,0 +1,44 @@
+{
+  "schemaVersion": 1,
+  "id": "j_000000000004",
+  "backend": "dsh",
+  "groupId": "g-alpha",
+  "groupName": "alpha-project",
+  "ownerId": "owner-live",
+  "cwd": "/fixture/repo",
+  "profile": "personal-deepseek",
+  "provider": "deepseek-official",
+  "model": "deepseek-flash",
+  "access": "read-only",
+  "isolation": "none",
+  "timeoutMs": 1200000,
+  "createdAt": "2026-10-21T09:00:00.000Z",
+  "stderrTail": "warn: retrying\n\u001b[2Jcleared screen\n",
+  "alerts": [
+    {
+      "kind": "tool_errors",
+      "message": "5 tool errors in a row",
+      "since": "2026-10-21T09:02:30.000Z"
+    },
+    {
+      "kind": "loop",
+      "message": "same tool call repeated 4 times",
+      "since": "2026-10-21T09:02:35.000Z"
+    }
+  ],
+  "malformedLines": 0,
+  "eventsCount": 0,
+  "toolCalls": 0,
+  "steps": 0,
+  "eventsPath": "/fixture/state/jobs/j_000000000004/events.ndjson",
+  "finalPath": "/fixture/state/jobs/j_000000000004/final.md",
+  "stderrPath": "/fixture/state/jobs/j_000000000004/stderr.log",
+  "jobPath": "/fixture/state/jobs/j_000000000004/job.json",
+  "sessionDir": "/fixture/state/jobs/j_000000000004",
+  "label": "evil \u001b[31mred\u001b[0m label\u0007",
+  "status": "failed",
+  "reason": "driver_error",
+  "startedAt": "2026-10-21T09:02:00.000Z",
+  "finishedAt": "2026-10-21T09:02:40.000Z",
+  "errorMessage": "provider error \u001b]0;pwned\u0007 429"
+}

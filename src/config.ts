@@ -17,6 +17,7 @@ export interface Config {
   stateDir: string;
   worktreeRoot: string;
   dshHome: string;
+  control: boolean;
   maxConcurrent: number;
   maxQueue: number;
   defaultTimeoutMs: number;
@@ -221,6 +222,7 @@ export async function loadConfig(): Promise<Config> {
     stateDir,
     worktreeRoot,
     dshHome,
+    control: boolEnv('AGENT_WORKERS_CONTROL', true),
     maxConcurrent: intEnv('AGENT_WORKERS_MAX_CONCURRENT', 3, 1, 8),
     maxQueue: intEnv('AGENT_WORKERS_MAX_QUEUE', 16, 0, 64),
     defaultTimeoutMs: intEnv('AGENT_WORKERS_DEFAULT_TIMEOUT_S', 1200, 60, 3600) * 1000,

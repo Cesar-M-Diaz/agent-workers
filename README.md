@@ -24,7 +24,9 @@ Claude Code plugin "agent-workers"
 ```
 
 These workers are separate dsh or pi processes. They are not Claude `Task` calls
-and do not appear in the DSH TUI native subagent side panel.
+and do not appear in the DSH TUI native subagent side panel. The optional
+`dsh-tui-agent-workers` panel (in the separate `dsh-tui-plugins` workspace) lists them in an "Agent Workers"
+plugin panel instead.
 
 ## Backends
 
@@ -258,8 +260,9 @@ provider/model metadata. Terminal jobs can be deleted from the job header. A
 dirty worktree requires a second confirmation before its changes are discarded.
 Cancellation remains an MCP operation.
 
-The dashboard is not the DSH TUI side panel. The TUI side panel belongs to an
-interactive DSH session; these workers are separate headless DSH processes.
+The dashboard is not the DSH TUI side panel. Inside dsh-tui, install the
+`dsh-tui-agent-workers` package from `dsh-tui-plugins/dsh-tui-agent-workers` to see the same jobs and
+cancel, clean up or delete them through the control API.
 
 ## Claude Code pane
 
@@ -617,6 +620,27 @@ home, but the fallback state is temporary.
 - `worker_cleanup`: remove a finished worktree and branch.
 - `worker_delete`: delete a terminal job record, logs, and its clean worktree; refuses while another active job shares its session directory.
 
+## Control API
+
+While the MCP server runs it also exposes a loopback-only HTTP control API for
+local clients such as the dsh-tui panel. It binds `127.0.0.1` on an ephemeral
+port, and every request needs the bearer token published in the owner
+descriptor `<state>/control/<ownerId>.json` (mode 0600, directory 0700). The
+descriptor also carries the `base_url` and `port`. The API is a thin adapter
+over the same job manager as the MCP tools: health and job capabilities,
+events, results, cancel, steer, cleanup, and delete. It never exposes the task,
+the worker environment, API keys, or the token.
+
+Set `AGENT_WORKERS_CONTROL=0` (`false`, `no`, or `off` also work) to disable it.
+The owner lease is still written, with `control: null`. See
+[docs/control-protocol.md](docs/control-protocol.md) for the full contract.
+
+The lease also makes several Claude sessions safe on one state dir: a server
+that starts never interrupts or kills the running jobs of another live server,
+and cleanup, delete and retention refuse to touch a worktree or session that an
+active job still uses (`worktree_busy`, `session_busy`). Actions on another
+server's jobs over HTTP return `not_owner`.
+
 ## Watchdogs
 
 The server folds each worker's NDJSON events and recomputes alerts on every
@@ -688,8 +712,9 @@ hooks module is reported there with its reason.
 ## Limitations
 
 - The server stores job state in memory and recovers only terminal metadata after
-  restart; live jobs are marked `interrupted` and their known process group is
-  killed when the pid identity still matches.
+  restart. Live jobs whose server is gone are marked `interrupted` and their
+  known process group is killed when the pid identity still matches; jobs of
+  another live server are left alone.
 - A fresh worktree does not include ignored build artifacts such as
   `node_modules`.
 - Only Linux `/proc` start-time matching is implemented; other POSIX platforms

@@ -86,9 +86,16 @@ export interface JobSummary {
   access: AccessMode;
   isolation: Isolation;
   cwd: string;
-  worktree?: { path: string; branch: string; base_commit: string; cleaned: boolean };
+  worktree?: {
+    path: string;
+    branch: string;
+    base_commit: string;
+    repo_root: string;
+    cleaned: boolean;
+  };
   created_at: string;
   started_at?: string;
+  finished_at?: string;
   elapsed_s?: number;
   queue_position?: number;
   session_id?: string;
@@ -98,9 +105,12 @@ export interface JobSummary {
   last_tool?: string;
   last_event_s_ago?: number;
   malformed_lines: number;
+  events_count: number;
   usage?: Usage;
   cost_usd?: number;
   alerts: JobAlert[];
+  resume_of?: string;
+  steered_from?: string;
 }
 
 export interface StartInput {

@@ -93,6 +93,7 @@ describe('JobManager', () => {
       stateDir: join(root, 'state'),
       worktreeRoot: join(root, 'worktrees'),
       dshHome: join(root, 'dsh-home'),
+      control: true,
       maxConcurrent: 1,
       maxQueue: 4,
       defaultTimeoutMs: 60_000,
@@ -168,6 +169,27 @@ describe('JobManager', () => {
       status: string;
     };
     expect(saved).toMatchObject({ id: started.job_id, status: 'succeeded' });
+    expect((await readdir(dir)).filter((name) => name.endsWith('.tmp'))).toEqual([]);
+  });
+
+  it('serializes job.json writes so the last state always wins', async () => {
+    const started = await manager.start({ task: 'serialized', access: 'read-only' });
+    await manager.wait([started.job_id], 'all', 10_000);
+    const internals = manager as unknown as {
+      jobs: Map<string, { label?: string }>;
+      writeJob(job: unknown): Promise<void>;
+    };
+    const job = internals.jobs.get(started.job_id);
+    if (!job) throw new Error('job not loaded');
+    const writes: Promise<void>[] = [];
+    for (let i = 0; i < 20; i += 1) {
+      job.label = `write-${i}`;
+      writes.push(internals.writeJob(job));
+    }
+    await Promise.all(writes);
+    const dir = join(config.stateDir, 'jobs', started.job_id);
+    const saved = JSON.parse(await readFile(join(dir, 'job.json'), 'utf8')) as { label: string };
+    expect(saved.label).toBe('write-19');
     expect((await readdir(dir)).filter((name) => name.endsWith('.tmp'))).toEqual([]);
   });
 

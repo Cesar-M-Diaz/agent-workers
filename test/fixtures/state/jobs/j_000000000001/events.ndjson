@@ -1,0 +1,10 @@
+{"type":"session","sessionId":"s-1"}
+{"type":"status","phase":"step_start"}
+{"type":"tool_call","callId":"c1","tool":"read","input":{"path":"src/auth.ts"}}
+{"type":"tool_result","callId":"c1","status":"completed"}
+this line is not json
+{"type":"status","phase":"step_end","usage":{"inputTokens":600,"outputTokens":100}}
+{"type":"status","phase":"step_start"}
+{"type":"tool_call","callId":"c2","tool":"bash","input":{"command":"pnpm test"}}
+{"type":"text","text":"Running the tests now."}
+{"type":"tool_result","callId":"c2"

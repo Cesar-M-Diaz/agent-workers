@@ -1,6 +1,6 @@
 {
   "name": "agent-workers",
-  "version": "0.4.0",
+  "version": "0.5.0",
   "private": true,
   "description": "Claude Code plugin and marketplace for running DeepSeek Harness (dsh) or pi headless workers in parallel",
   "license": "MIT",
@@ -36,7 +36,7 @@
     "typecheck": "tsc -b",
     "start": "node dist/server.js",
     "ui": "node dist/ui.js",
-    "test": "tsc -b && node scripts/copy-assets.mjs && vitest run --exclude 'tests/**'",
+    "test": "tsc -b && node scripts/copy-assets.mjs && vitest run",
     "lint": "biome check .",
     "format": "biome format --write ."
   },
