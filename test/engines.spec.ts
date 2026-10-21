@@ -65,7 +65,7 @@ describe('PiEngine', () => {
       thinking: 'low',
     });
 
-    expect(engine.supportsResume).toBe(false);
+    expect(engine.supportsResume).toBe(true);
     const plan = await engine.launch(spec, 'review this');
     expect(plan.taskInput).toBe('stdin');
     expect(plan.args).toEqual([

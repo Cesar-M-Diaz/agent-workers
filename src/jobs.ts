@@ -99,6 +99,8 @@ interface Job {
   stderrPath: string;
   jobPath: string;
   dir: string;
+  /** Directory the engine uses for session files; inherited on resume. */
+  sessionDir: string;
 }
 
 interface ProfileStatus {
@@ -153,6 +155,7 @@ interface PersistedJob {
   finalPath: string;
   stderrPath: string;
   jobPath: string;
+  sessionDir?: string;
 }
 
 function appendTail(current: string, chunk: string, maxBytes = MAX_STDERR): string {
@@ -194,6 +197,7 @@ function persisted(job: Job): PersistedJob {
     pid: job.pid,
     pgidStartTime: job.pgidStartTime,
     sessionId: job.sessionId ?? job.fold.state.sessionId,
+    sessionDir: job.sessionDir,
     resumeOf: job.resumeOf,
     steeredFrom: job.steeredFrom,
     worktree: job.worktree,
@@ -218,6 +222,7 @@ function persisted(job: Job): PersistedJob {
 }
 
 function fromPersisted(saved: PersistedJob, engine: Engine): Job {
+  const dir = join(saved.jobPath, '..');
   const backend: EngineId = saved.backend === 'pi' ? 'pi' : 'dsh';
   const fold = engine.createFold(() => undefined);
   fold.state.sessionId = saved.sessionId;
@@ -267,7 +272,8 @@ function fromPersisted(saved: PersistedJob, engine: Engine): Job {
     finalPath: saved.finalPath,
     stderrPath: saved.stderrPath,
     jobPath: saved.jobPath,
-    dir: join(saved.jobPath, '..'),
+    dir,
+    sessionDir: saved.sessionDir ?? dir,
   };
 }
 
@@ -538,6 +544,7 @@ export class JobManager {
     let isolation: Isolation;
     let worktree: WorktreeInfo | undefined;
     let sessionId: string | undefined;
+    let sessionDir: string | undefined;
     let resumeOf: string | undefined;
     const steeredFrom = input.steered_from;
     let groupId = input.group_id?.trim();
@@ -609,6 +616,7 @@ export class JobManager {
       isolation = original.isolation;
       worktree = original.worktree;
       sessionId = original.sessionId;
+      sessionDir = original.sessionDir ?? original.dir;
       resumeOf = original.id;
       groupId ??= original.groupId;
       groupName ??= original.groupName;
@@ -663,6 +671,7 @@ export class JobManager {
     const resolvedGroupName = groupName ?? this.defaultGroupName;
 
     const dir = join(this.config.stateDir, 'jobs', id);
+    sessionDir ??= dir;
     await mkdir(dir, { recursive: true, mode: 0o700 });
     const job: Job = {
       id,
@@ -695,6 +704,7 @@ export class JobManager {
       stderrPath: join(dir, 'stderr.log'),
       jobPath: join(dir, 'job.json'),
       dir,
+      sessionDir,
     };
     this.jobs.set(id, job);
     this.queue.push(job);
@@ -775,7 +785,7 @@ export class JobManager {
         model: job.model,
         access: job.access,
         sessionId: job.sessionId,
-        sessionDir: job.dir,
+        sessionDir: job.sessionDir,
         depth,
       },
       job.task,

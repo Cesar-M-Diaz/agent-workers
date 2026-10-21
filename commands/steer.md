@@ -13,7 +13,7 @@ If either is missing, ask for the missing part and stop.
 Call the `worker_steer` MCP tool with the supplied job id and message. Passing
 `timeout_s` is optional; omit it to inherit the original job's timeout.
 
-The steered worker resumes the original DSH session, but it does not see this
+The steered worker resumes the original session, but it does not see this
 conversation, the parent chat history, or any file you read without mentioning
 it. Rewrite the message so it is fully self-contained: state the reason for the
 correction, the exact expected behavior, relevant paths, and any constraints.

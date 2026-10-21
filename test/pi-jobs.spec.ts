@@ -122,16 +122,32 @@ describe('JobManager pi backend', () => {
     expect(events.some((event) => event.type === 'session')).toBe(true);
   });
 
-  it('refuses to resume or steer a pi job for now', async () => {
-    const started = await manager.start({ task: 'no resume yet', access: 'read-only' });
+  it('resumes and steers a pi job in the original session directory', async () => {
+    const started = await manager.start({ task: 'first', access: 'read-only' });
     await manager.wait([started.job_id], 'all', 10_000);
 
-    await expect(
-      manager.start({ task: 'resume', resume_job_id: started.job_id }),
-    ).rejects.toMatchObject({ code: 'resume_unavailable' });
-    await expect(manager.steer({ job_id: started.job_id, message: 'steer' })).rejects.toMatchObject(
-      { code: 'resume_unavailable' },
-    );
+    const steered = (await manager.steer({
+      job_id: started.job_id,
+      message: 'continue',
+    })) as Record<string, unknown>;
+    expect(steered.cancelled).toBe(false);
+    const steeredId = steered.steered_job_id as string;
+    const waited = await manager.wait([steeredId], 'all', 10_000);
+    expect(waited.jobs[0]?.status).toBe('succeeded');
+
+    const argv = JSON.parse(await readFile(argvFile, 'utf8')) as string[];
+    expect(argv).toContain('--session-id');
+    expect(argv).toContain('fixture-session');
+    const dirIndex = argv.indexOf('--session-dir');
+    expect(dirIndex).toBeGreaterThanOrEqual(0);
+    expect(argv[dirIndex + 1]).toBe(join(config.stateDir, 'jobs', started.job_id, 'pi-sessions'));
+
+    const result = await manager.result(steeredId, 1000, new Set(['final']));
+    expect(result.final).toBe('hi');
+    const saved = JSON.parse(
+      await readFile(join(config.stateDir, 'jobs', steeredId, 'job.json'), 'utf8'),
+    ) as Record<string, unknown>;
+    expect(saved.sessionDir).toBe(join(config.stateDir, 'jobs', started.job_id));
   });
 
   it('treats a successful auto-retry as a success', async () => {

@@ -51,8 +51,7 @@ export class PiEngine implements Engine {
   readonly id = 'pi' as const;
   readonly label = 'pi';
   readonly defaultProfile = 'default';
-  // Resume/steer need the original job's session directory; that is phase 3.
-  readonly supportsResume = false;
+  readonly supportsResume = true;
 
   private version = 'unavailable';
   private profiles: Record<string, PiProfile> = {};

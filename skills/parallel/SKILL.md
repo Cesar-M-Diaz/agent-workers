@@ -22,7 +22,7 @@ The `agent-workers` MCP server exposes eleven tools:
 - `worker_result`: read the final answer, stderr tail, and worktree diff.
 - `worker_events`: read live NDJSON events from a cursor (`next_cursor`).
 - `worker_cancel`: cancel a queued or running job.
-- `worker_steer`: cancel (when active) and resume the same dsh session with a corrective message. pi steering is disabled in 0.4.
+- `worker_steer`: cancel (when active) and resume the same session with a corrective message.
 - `worker_cleanup`: remove a finished worktree and branch without deleting the job record.
 - `worker_delete`: delete a terminal job record, logs, and a clean worktree/branch.
 
@@ -175,7 +175,7 @@ second press.
 Use `worker_steer` when a worker is off task, made a wrong assumption, or needs a
 corrective instruction that must build on its current session and working
 directory. For an active job the server cancels it, waits for it to settle, and
-resumes the same dsh session with your message. For a terminal job it skips the
+resumes the same session with your message. For a terminal job it skips the
 cancel and starts a follow-up in that session.
 
 The steered worker does not see this conversation. The message must be

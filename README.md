@@ -11,7 +11,7 @@ The server uses one `dsh --profile <profile> --json` or `pi --mode json` process
 per job. It provides a bounded FIFO queue, wall-clock timeouts, process-group
 cancellation, optional git worktree isolation, session grouping, artifact-based
 results, automatic retention for terminal jobs, pure heuristic watchdogs, and
-session steering through `worker_steer` (dsh only in 0.4).
+session steering through `worker_steer`.
 
 ```text
 Claude Code plugin "agent-workers"
@@ -39,7 +39,8 @@ and do not appear in the DSH TUI native subagent side panel.
   `pi_profiles_file`. pi workers are read-only by default: `pi_allow_write`
   (or `AGENT_WORKERS_PI_ALLOW_WRITE=1`) enables workspace-write, which should
   only be used with worktree isolation. pi has no sandbox; read the security
-  section before enabling writes. Resume and steer for pi are disabled in 0.4.
+  section before enabling writes. pi resume and steer reuse the original job's
+  session directory.
 
 pi workers inherit the user's pi auth through `~/.pi/agent/auth.json`, or use
 `pi_agent_dir` to point at a dedicated `PI_CODING_AGENT_DIR`. Provider API keys
@@ -63,16 +64,14 @@ A typical delegation, end to end:
 4. Claude waits with `worker_wait`. Watchdogs flag stalls, loops, repeated tool
    errors and budget overruns; a new alert wakes the wait (`alerted`) so Claude
    can inspect `worker_events` and correct the worker with `worker_steer`, which
-   cancels it and resumes the same dsh session with a new instruction. pi
-   steering is disabled in 0.4.
+   cancels it and resumes the same session with a new instruction.
 5. Claude reads `worker_result` (final answer plus the worktree diff), verifies it
    against the project's checks, and applies or rejects it.
 6. Claude deletes or cleans the job in the same turn (`worker_delete` /
    `worker_cleanup`). You can do the same from the pane's buttons.
 
 A worker cannot receive messages while it runs: dsh headless and `pi --mode json`
-answer one task and exit. Steering is always cancel + resume, and only dsh
-supports it in 0.4.
+answer one task and exit. Steering is always cancel + resume.
 
 ## Install
 
@@ -614,7 +613,7 @@ home, but the fallback state is temporary.
 - `worker_result`: read the final answer, stderr tail, worktree diff, usage and estimated cost.
 - `worker_events`: read a cursor-based page of live NDJSON events.
 - `worker_cancel`: cancel a queued or running job.
-- `worker_steer`: cancel a queued or running job (settled as `cancelled`/`steered`) and resume its dsh session with a self-contained corrective message; a terminal job is resumed without a cancel. pi steering is disabled in 0.4.
+- `worker_steer`: cancel a queued or running job (settled as `cancelled`/`steered`) and resume its session with a self-contained corrective message; a terminal job is resumed without a cancel.
 - `worker_cleanup`: remove a finished worktree and branch.
 - `worker_delete`: delete a terminal job record, logs, and its clean worktree.
 
@@ -698,7 +697,7 @@ hooks module is reported there with its reason.
 - No automatic commits, merges, container creation, or remote workers.
 - These are external dsh or pi processes, not native Claude Tasks or DSH TUI
   subagents. They do not appear in either harness's native subagent panel.
-- pi resume and steer are disabled in 0.4; a pi job is read-only unless
+- pi resume and steer use the original job's session directory; a pi job is read-only unless
   `pi_allow_write` is enabled.
 - pi reports a calculated cost, not a billed cost; the dashboard labels it as an
   estimate.
