@@ -36,7 +36,7 @@ async function credentialStore(text: string): Promise<{
   useDshCredentials: boolean;
   credentialsFile: string;
 }> {
-  const root = await mkdtemp(join(tmpdir(), 'dsh-workers-config-'));
+  const root = await mkdtemp(join(tmpdir(), 'agent-workers-config-'));
   roots.push(root);
   const credentialsFile = join(root, 'credentials.yaml');
   await writeFile(credentialsFile, text, { mode: 0o600 });
@@ -45,16 +45,20 @@ async function credentialStore(text: string): Promise<{
 
 describe('watchdog configuration', () => {
   const WATCHDOG_ENV = [
-    'DSH_WORKERS_STALL_S',
-    'DSH_WORKERS_LOOP_REPEAT',
-    'DSH_WORKERS_TOOL_ERROR_LIMIT',
-    'DSH_WORKERS_MAX_STEPS',
-    'DSH_WORKERS_MAX_COST_USD',
-    'DSH_WORKERS_WATCHDOG_ACTION',
-    'DSH_WORKERS_STATE_DIR',
-    'DSH_WORKERS_WORKTREE_ROOT',
-    'DSH_WORKERS_DSH_HOME',
-    'DSH_WORKERS_ALLOWED_ROOTS',
+    'AGENT_WORKERS_STALL_S',
+    'AGENT_WORKERS_LOOP_REPEAT',
+    'AGENT_WORKERS_TOOL_ERROR_LIMIT',
+    'AGENT_WORKERS_MAX_STEPS',
+    'AGENT_WORKERS_MAX_COST_USD',
+    'AGENT_WORKERS_WATCHDOG_ACTION',
+    'AGENT_WORKERS_STATE_DIR',
+    'AGENT_WORKERS_WORKTREE_ROOT',
+    'AGENT_WORKERS_DSH_HOME',
+    'AGENT_WORKERS_ALLOWED_ROOTS',
+    'AGENT_WORKERS_MAX_CONCURRENT',
+    'AGENT_WORKERS_BACKEND',
+    'DSH_WORKERS_MAX_CONCURRENT',
+    'DSH_WORKERS_BACKEND',
     'XDG_STATE_HOME',
   ] as const;
   let watchdogSaved: Record<string, string | undefined> = {};
@@ -65,12 +69,12 @@ describe('watchdog configuration', () => {
       watchdogSaved[name] = process.env[name];
       delete process.env[name];
     }
-    const root = await mkdtemp(join(tmpdir(), 'dsh-workers-config-watchdog-'));
+    const root = await mkdtemp(join(tmpdir(), 'agent-workers-config-watchdog-'));
     roots.push(root);
-    process.env.DSH_WORKERS_STATE_DIR = join(root, 'state');
-    process.env.DSH_WORKERS_WORKTREE_ROOT = join(root, 'worktrees');
-    process.env.DSH_WORKERS_DSH_HOME = join(root, 'dsh-home');
-    process.env.DSH_WORKERS_ALLOWED_ROOTS = process.cwd();
+    process.env.AGENT_WORKERS_STATE_DIR = join(root, 'state');
+    process.env.AGENT_WORKERS_WORKTREE_ROOT = join(root, 'worktrees');
+    process.env.AGENT_WORKERS_DSH_HOME = join(root, 'dsh-home');
+    process.env.AGENT_WORKERS_ALLOWED_ROOTS = process.cwd();
   });
 
   afterEach(() => {
@@ -94,22 +98,36 @@ describe('watchdog configuration', () => {
   it('treats blank plugin paths as unset', async () => {
     const xdg = join(roots.at(-1) ?? tmpdir(), 'xdg');
     process.env.XDG_STATE_HOME = xdg;
-    process.env.DSH_WORKERS_STATE_DIR = '';
-    process.env.DSH_WORKERS_WORKTREE_ROOT = ' ';
-    process.env.DSH_WORKERS_DSH_HOME = '';
+    process.env.AGENT_WORKERS_STATE_DIR = '';
+    process.env.AGENT_WORKERS_WORKTREE_ROOT = ' ';
+    process.env.AGENT_WORKERS_DSH_HOME = '';
     const config = await loadConfig();
-    expect(config.stateDir).toBe(join(xdg, 'dsh-workers'));
-    expect(config.worktreeRoot).toBe(join(xdg, 'dsh-workers', 'worktrees'));
-    expect(config.dshHome).toBe(join(xdg, 'dsh-workers', 'dsh-home'));
+    expect(config.stateDir).toBe(join(xdg, 'agent-workers'));
+    expect(config.worktreeRoot).toBe(join(xdg, 'agent-workers', 'worktrees'));
+    expect(config.dshHome).toBe(join(xdg, 'agent-workers', 'dsh-home'));
+  });
+
+  it('accepts the legacy DSH_WORKERS prefix and prefers AGENT_WORKERS', async () => {
+    process.env.DSH_WORKERS_MAX_CONCURRENT = '4';
+    process.env.DSH_WORKERS_BACKEND = 'pi';
+    let config = await loadConfig();
+    expect(config.maxConcurrent).toBe(4);
+    expect(config.backend).toBe('pi');
+
+    process.env.AGENT_WORKERS_MAX_CONCURRENT = '5';
+    process.env.AGENT_WORKERS_BACKEND = 'dsh';
+    config = await loadConfig();
+    expect(config.maxConcurrent).toBe(5);
+    expect(config.backend).toBe('dsh');
   });
 
   it('parses the watchdog env vars and their float budget', async () => {
-    process.env.DSH_WORKERS_STALL_S = '45';
-    process.env.DSH_WORKERS_LOOP_REPEAT = '7';
-    process.env.DSH_WORKERS_TOOL_ERROR_LIMIT = '9';
-    process.env.DSH_WORKERS_MAX_STEPS = '12';
-    process.env.DSH_WORKERS_MAX_COST_USD = '0.125';
-    process.env.DSH_WORKERS_WATCHDOG_ACTION = 'cancel';
+    process.env.AGENT_WORKERS_STALL_S = '45';
+    process.env.AGENT_WORKERS_LOOP_REPEAT = '7';
+    process.env.AGENT_WORKERS_TOOL_ERROR_LIMIT = '9';
+    process.env.AGENT_WORKERS_MAX_STEPS = '12';
+    process.env.AGENT_WORKERS_MAX_COST_USD = '0.125';
+    process.env.AGENT_WORKERS_WATCHDOG_ACTION = 'cancel';
     const config = await loadConfig();
     expect(config.stallMs).toBe(45_000);
     expect(config.loopRepeat).toBe(7);
@@ -120,28 +138,28 @@ describe('watchdog configuration', () => {
   });
 
   it('rejects values outside the documented bounds', async () => {
-    process.env.DSH_WORKERS_STALL_S = '29';
-    await expect(loadConfig()).rejects.toThrow(/DSH_WORKERS_STALL_S/);
-    process.env.DSH_WORKERS_STALL_S = '120';
+    process.env.AGENT_WORKERS_STALL_S = '29';
+    await expect(loadConfig()).rejects.toThrow(/AGENT_WORKERS_STALL_S/);
+    process.env.AGENT_WORKERS_STALL_S = '120';
 
-    process.env.DSH_WORKERS_LOOP_REPEAT = '21';
-    await expect(loadConfig()).rejects.toThrow(/DSH_WORKERS_LOOP_REPEAT/);
-    process.env.DSH_WORKERS_LOOP_REPEAT = '4';
+    process.env.AGENT_WORKERS_LOOP_REPEAT = '21';
+    await expect(loadConfig()).rejects.toThrow(/AGENT_WORKERS_LOOP_REPEAT/);
+    process.env.AGENT_WORKERS_LOOP_REPEAT = '4';
 
-    process.env.DSH_WORKERS_TOOL_ERROR_LIMIT = '0';
-    await expect(loadConfig()).rejects.toThrow(/DSH_WORKERS_TOOL_ERROR_LIMIT/);
-    process.env.DSH_WORKERS_TOOL_ERROR_LIMIT = '5';
+    process.env.AGENT_WORKERS_TOOL_ERROR_LIMIT = '0';
+    await expect(loadConfig()).rejects.toThrow(/AGENT_WORKERS_TOOL_ERROR_LIMIT/);
+    process.env.AGENT_WORKERS_TOOL_ERROR_LIMIT = '5';
 
-    process.env.DSH_WORKERS_MAX_STEPS = '0';
-    await expect(loadConfig()).rejects.toThrow(/DSH_WORKERS_MAX_STEPS/);
-    process.env.DSH_WORKERS_MAX_STEPS = '10';
+    process.env.AGENT_WORKERS_MAX_STEPS = '0';
+    await expect(loadConfig()).rejects.toThrow(/AGENT_WORKERS_MAX_STEPS/);
+    process.env.AGENT_WORKERS_MAX_STEPS = '10';
 
-    process.env.DSH_WORKERS_MAX_COST_USD = '-1';
-    await expect(loadConfig()).rejects.toThrow(/DSH_WORKERS_MAX_COST_USD/);
-    process.env.DSH_WORKERS_MAX_COST_USD = '1';
+    process.env.AGENT_WORKERS_MAX_COST_USD = '-1';
+    await expect(loadConfig()).rejects.toThrow(/AGENT_WORKERS_MAX_COST_USD/);
+    process.env.AGENT_WORKERS_MAX_COST_USD = '1';
 
-    process.env.DSH_WORKERS_WATCHDOG_ACTION = 'kill';
-    await expect(loadConfig()).rejects.toThrow(/DSH_WORKERS_WATCHDOG_ACTION/);
+    process.env.AGENT_WORKERS_WATCHDOG_ACTION = 'kill';
+    await expect(loadConfig()).rejects.toThrow(/AGENT_WORKERS_WATCHDOG_ACTION/);
   });
 });
 

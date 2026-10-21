@@ -1,13 +1,13 @@
 {
-  "name": "dsh-workers",
-  "version": "0.3.6",
+  "name": "agent-workers",
+  "version": "0.4.0",
   "private": true,
-  "description": "Claude Code plugin and marketplace for running DeepSeek Harness (dsh) headless workers in parallel",
+  "description": "Claude Code plugin and marketplace for running DeepSeek Harness (dsh) or pi headless workers in parallel",
   "license": "MIT",
   "type": "module",
   "bin": {
-    "dsh-workers": "./dist/server.js",
-    "dsh-workers-ui": "./dist/ui.js"
+    "agent-workers": "./dist/server.js",
+    "agent-workers-ui": "./dist/ui.js"
   },
   "files": [
     ".claude-plugin",
@@ -15,6 +15,7 @@
     "commands",
     "dist",
     "hooks",
+    "legacy",
     "plugin-dist",
     "scripts",
     "skills",
@@ -26,7 +27,7 @@
   "packageManager": "pnpm@10.11.0",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/Cesar-M-Diaz/dsh-workers.git"
+    "url": "git+https://github.com/Cesar-M-Diaz/agent-workers.git"
   },
   "scripts": {
     "build": "tsc -b && node scripts/copy-assets.mjs",

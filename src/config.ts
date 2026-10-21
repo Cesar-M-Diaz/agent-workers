@@ -34,8 +34,22 @@ export interface Config {
   watchdogAction: 'warn' | 'cancel';
 }
 
+function readEnv(name: string): string | undefined {
+  const suffix = name.startsWith('AGENT_WORKERS_')
+    ? name.slice('AGENT_WORKERS_'.length)
+    : name.startsWith('DSH_WORKERS_')
+      ? name.slice('DSH_WORKERS_'.length)
+      : undefined;
+  if (suffix !== undefined) {
+    const current = process.env[`AGENT_WORKERS_${suffix}`];
+    if (current !== undefined && current.trim() !== '') return current;
+    return process.env[`DSH_WORKERS_${suffix}`];
+  }
+  return process.env[name];
+}
+
 function intEnv(name: string, fallback: number, min: number, max: number): number {
-  const raw = process.env[name];
+  const raw = readEnv(name);
   if (raw === undefined || raw.trim() === '') return fallback;
   const value = Number(raw);
   if (!Number.isInteger(value) || value < min || value > max) {
@@ -45,7 +59,7 @@ function intEnv(name: string, fallback: number, min: number, max: number): numbe
 }
 
 function optionalIntEnv(name: string, min: number, max: number): number | undefined {
-  const raw = process.env[name];
+  const raw = readEnv(name);
   if (raw === undefined || raw.trim() === '') return undefined;
   const value = Number(raw);
   if (!Number.isInteger(value) || value < min || value > max) {
@@ -55,7 +69,7 @@ function optionalIntEnv(name: string, min: number, max: number): number | undefi
 }
 
 function floatEnv(name: string, min: number, max: number): number | undefined {
-  const raw = process.env[name];
+  const raw = readEnv(name);
   if (raw === undefined || raw.trim() === '') return undefined;
   const value = Number(raw);
   if (!Number.isFinite(value) || value < min || value > max) {
@@ -65,7 +79,7 @@ function floatEnv(name: string, min: number, max: number): number | undefined {
 }
 
 function enumEnv<T extends string>(name: string, fallback: T, values: readonly T[]): T {
-  const raw = process.env[name];
+  const raw = readEnv(name);
   if (raw === undefined || raw.trim() === '') return fallback;
   const value = raw.trim().toLowerCase();
   if (!values.includes(value as T)) {
@@ -75,7 +89,7 @@ function enumEnv<T extends string>(name: string, fallback: T, values: readonly T
 }
 
 function boolEnv(name: string, fallback = false): boolean {
-  const raw = process.env[name];
+  const raw = readEnv(name);
   if (raw === undefined || raw.trim() === '') return fallback;
   return ['1', 'true', 'yes', 'on'].includes(raw.trim().toLowerCase());
 }
@@ -104,7 +118,7 @@ async function ensurePrivateDir(path: string, fallbackName: string): Promise<str
       const message = err instanceof Error ? err.message : String(err);
       throw new Error(`state directory is not usable: ${dir}: ${message}`);
     }
-    const fallback = join(tmpdir(), 'dsh-workers', fallbackName);
+    const fallback = join(tmpdir(), 'agent-workers', fallbackName);
     await mkdir(fallback, { recursive: true, mode: 0o700 });
     await chmod(fallback, 0o700);
     process.stderr.write(
@@ -119,10 +133,18 @@ async function ensurePrivateDir(path: string, fallbackName: string): Promise<str
   }
 }
 
-function defaultStateDir(): string {
-  const xdgStateHome = process.env.XDG_STATE_HOME?.trim();
-  if (xdgStateHome) return join(xdgStateHome, 'dsh-workers');
-  return join(homedir(), '.local', 'state', 'dsh-workers');
+async function defaultStateDir(): Promise<string> {
+  const base = process.env.XDG_STATE_HOME?.trim()
+    ? process.env.XDG_STATE_HOME.trim()
+    : join(homedir(), '.local', 'state');
+  const legacy = join(base, 'agent-workers');
+  try {
+    const info = await stat(legacy);
+    if (info.isDirectory()) return legacy;
+  } catch {
+    // No previous agent-workers state; use the new name.
+  }
+  return join(base, 'agent-workers');
 }
 
 function splitList(raw: string | undefined): string[] {
@@ -135,26 +157,26 @@ function splitList(raw: string | undefined): string[] {
 
 /** An env path, or undefined when unset or blank (plugin userConfig passes ""). */
 function pathEnv(name: string): string | undefined {
-  const raw = process.env[name]?.trim();
+  const raw = readEnv(name)?.trim();
   return raw ? raw : undefined;
 }
 
 export async function resolveWorkerStateDir(): Promise<string> {
-  return ensurePrivateDir(pathEnv('DSH_WORKERS_STATE_DIR') ?? defaultStateDir(), 'state');
+  return ensurePrivateDir(pathEnv('AGENT_WORKERS_STATE_DIR') ?? (await defaultStateDir()), 'state');
 }
 
 export async function loadConfig(): Promise<Config> {
   const stateDir = await resolveWorkerStateDir();
   const worktreeRoot = await ensurePrivateDir(
-    pathEnv('DSH_WORKERS_WORKTREE_ROOT') ?? join(stateDir, 'worktrees'),
+    pathEnv('AGENT_WORKERS_WORKTREE_ROOT') ?? join(stateDir, 'worktrees'),
     'worktrees',
   );
   const dshHome = await ensurePrivateDir(
-    pathEnv('DSH_WORKERS_DSH_HOME') ?? join(stateDir, 'dsh-home'),
+    pathEnv('AGENT_WORKERS_DSH_HOME') ?? join(stateDir, 'dsh-home'),
     'dsh-home',
   );
 
-  const rootValues = splitList(process.env.DSH_WORKERS_ALLOWED_ROOTS);
+  const rootValues = splitList(readEnv('AGENT_WORKERS_ALLOWED_ROOTS'));
   if (rootValues.length === 0) rootValues.push(process.cwd());
   const allowedRoots = await resolveAllowedRoots(rootValues);
 
@@ -176,48 +198,48 @@ export async function loadConfig(): Promise<Config> {
     'SSL_CERT_FILE',
     'NODE_EXTRA_CA_CERTS',
     'DEEPSEEK_BASE_URL',
-    ...splitList(process.env.DSH_WORKERS_ENV_ALLOW),
+    ...splitList(readEnv('AGENT_WORKERS_ENV_ALLOW')),
   ];
 
-  const piAgentDir = pathEnv('DSH_WORKERS_PI_AGENT_DIR');
-  const piProfilesFile = process.env.DSH_WORKERS_PI_PROFILES_FILE?.trim();
+  const piAgentDir = pathEnv('AGENT_WORKERS_PI_AGENT_DIR');
+  const piProfilesFile = readEnv('AGENT_WORKERS_PI_PROFILES_FILE')?.trim();
   return {
-    backend: enumEnv<'dsh' | 'pi'>('DSH_WORKERS_BACKEND', 'dsh', ['dsh', 'pi']),
-    dshBin: process.env.DSH_WORKERS_DSH_BIN
-      ? resolve(expandHome(process.env.DSH_WORKERS_DSH_BIN))
+    backend: enumEnv<'dsh' | 'pi'>('AGENT_WORKERS_BACKEND', 'dsh', ['dsh', 'pi']),
+    dshBin: readEnv('AGENT_WORKERS_DSH_BIN')
+      ? resolve(expandHome(readEnv('AGENT_WORKERS_DSH_BIN')!))
       : 'dsh',
-    piBin: process.env.DSH_WORKERS_PI_BIN
-      ? resolve(expandHome(process.env.DSH_WORKERS_PI_BIN))
+    piBin: readEnv('AGENT_WORKERS_PI_BIN')
+      ? resolve(expandHome(readEnv('AGENT_WORKERS_PI_BIN')!))
       : 'pi',
-    piDefaultProfile: process.env.DSH_WORKERS_PI_PROFILE?.trim() || 'default',
+    piDefaultProfile: readEnv('AGENT_WORKERS_PI_PROFILE')?.trim() || 'default',
     piProfilesFile: resolve(expandHome(piProfilesFile || join(stateDir, 'pi-profiles.json'))),
-    piModel: process.env.DSH_WORKERS_PI_MODEL?.trim() || '',
-    piThinking: process.env.DSH_WORKERS_PI_THINKING?.trim() || '',
+    piModel: readEnv('AGENT_WORKERS_PI_MODEL')?.trim() || '',
+    piThinking: readEnv('AGENT_WORKERS_PI_THINKING')?.trim() || '',
     piAgentDir: piAgentDir ? resolve(expandHome(piAgentDir)) : '',
-    piAllowWrite: boolEnv('DSH_WORKERS_PI_ALLOW_WRITE'),
+    piAllowWrite: boolEnv('AGENT_WORKERS_PI_ALLOW_WRITE'),
     allowedRoots,
     stateDir,
     worktreeRoot,
     dshHome,
-    maxConcurrent: intEnv('DSH_WORKERS_MAX_CONCURRENT', 3, 1, 8),
-    maxQueue: intEnv('DSH_WORKERS_MAX_QUEUE', 16, 0, 64),
-    defaultTimeoutMs: intEnv('DSH_WORKERS_DEFAULT_TIMEOUT_S', 1200, 60, 3600) * 1000,
-    maxTimeoutMs: intEnv('DSH_WORKERS_MAX_TIMEOUT_S', 3600, 60, 3600) * 1000,
-    maxDepth: intEnv('DSH_WORKERS_MAX_DEPTH', 2, 0, 8),
-    retentionDays: intEnv('DSH_WORKERS_RETENTION_DAYS', 7, 0, 3650),
-    useDshCredentials: boolEnv('DSH_WORKERS_USE_DSH_CREDENTIALS'),
+    maxConcurrent: intEnv('AGENT_WORKERS_MAX_CONCURRENT', 3, 1, 8),
+    maxQueue: intEnv('AGENT_WORKERS_MAX_QUEUE', 16, 0, 64),
+    defaultTimeoutMs: intEnv('AGENT_WORKERS_DEFAULT_TIMEOUT_S', 1200, 60, 3600) * 1000,
+    maxTimeoutMs: intEnv('AGENT_WORKERS_MAX_TIMEOUT_S', 3600, 60, 3600) * 1000,
+    maxDepth: intEnv('AGENT_WORKERS_MAX_DEPTH', 2, 0, 8),
+    retentionDays: intEnv('AGENT_WORKERS_RETENTION_DAYS', 7, 0, 3650),
+    useDshCredentials: boolEnv('AGENT_WORKERS_USE_DSH_CREDENTIALS'),
     credentialsFile: resolve(
       expandHome(
-        process.env.DSH_WORKERS_CREDENTIALS_FILE ?? join(homedir(), '.dsh', '.credentials.yaml'),
+        readEnv('AGENT_WORKERS_CREDENTIALS_FILE') ?? join(homedir(), '.dsh', '.credentials.yaml'),
       ),
     ),
     envAllow: [...new Set(envAllow)],
-    stallMs: intEnv('DSH_WORKERS_STALL_S', 120, 30, 3600) * 1000,
-    loopRepeat: intEnv('DSH_WORKERS_LOOP_REPEAT', 4, 2, 20),
-    toolErrorLimit: intEnv('DSH_WORKERS_TOOL_ERROR_LIMIT', 5, 1, 50),
-    maxSteps: optionalIntEnv('DSH_WORKERS_MAX_STEPS', 1, 1_000_000),
-    maxCostUsd: floatEnv('DSH_WORKERS_MAX_COST_USD', 0, 1_000_000),
-    watchdogAction: enumEnv('DSH_WORKERS_WATCHDOG_ACTION', 'warn', ['warn', 'cancel']),
+    stallMs: intEnv('AGENT_WORKERS_STALL_S', 120, 30, 3600) * 1000,
+    loopRepeat: intEnv('AGENT_WORKERS_LOOP_REPEAT', 4, 2, 20),
+    toolErrorLimit: intEnv('AGENT_WORKERS_TOOL_ERROR_LIMIT', 5, 1, 50),
+    maxSteps: optionalIntEnv('AGENT_WORKERS_MAX_STEPS', 1, 1_000_000),
+    maxCostUsd: floatEnv('AGENT_WORKERS_MAX_COST_USD', 0, 1_000_000),
+    watchdogAction: enumEnv('AGENT_WORKERS_WATCHDOG_ACTION', 'warn', ['warn', 'cancel']),
   };
 }
 

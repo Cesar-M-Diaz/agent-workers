@@ -1,9 +1,9 @@
 ---
-description: Wait up to a bounded timeout for DSH workers
+description: Wait up to a bounded timeout for workers
 argument-hint: <job_id ...>
-allowed-tools: mcp__plugin_dsh-workers_dsh-workers__dsh_wait
+allowed-tools: mcp__plugin_agent-workers_agent-workers__worker_wait
 ---
-Call the `dsh_wait` MCP tool for these jobs:
+Call the `worker_wait` MCP tool for these jobs:
 
 $ARGUMENTS
 

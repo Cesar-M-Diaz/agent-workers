@@ -1,16 +1,16 @@
 ---
-description: Steer a running or finished DSH worker with a self-contained instruction
+description: Steer a running or finished worker with a self-contained instruction
 argument-hint: <job_id> <message>
-allowed-tools: mcp__plugin_dsh-workers_dsh-workers__dsh_steer
+allowed-tools: mcp__plugin_agent-workers_agent-workers__worker_steer
 ---
-Steer this DSH worker:
+Steer this worker:
 
 $ARGUMENTS
 
 Parse the first token as `job_id`; everything after it is the steering message.
 If either is missing, ask for the missing part and stop.
 
-Call the `dsh_steer` MCP tool with the supplied job id and message. Passing
+Call the `worker_steer` MCP tool with the supplied job id and message. Passing
 `timeout_s` is optional; omit it to inherit the original job's timeout.
 
 The steered worker resumes the original DSH session, but it does not see this

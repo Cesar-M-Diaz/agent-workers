@@ -31,7 +31,7 @@ describe('job retention', () => {
   let root: string;
 
   beforeAll(async () => {
-    root = await mkdtemp(join(tmpdir(), 'dsh-workers-admin-test-'));
+    root = await mkdtemp(join(tmpdir(), 'agent-workers-admin-test-'));
     const old = new Date(Date.now() - 10 * 24 * 60 * 60 * 1000).toISOString();
     await writeJob(root, 'j_old', 'succeeded', old);
     await writeJob(root, 'j_new', 'succeeded', new Date().toISOString());

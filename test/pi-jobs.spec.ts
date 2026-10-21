@@ -173,8 +173,8 @@ describe('JobManager pi backend', () => {
 
   it('falls back to the pi default profile when the shared profile is a dsh one', async () => {
     const temp = await mkdtemp(join(tmpdir(), 'agent-workers-pi-profile-'));
-    const previous = process.env.DSH_WORKERS_PROFILE;
-    process.env.DSH_WORKERS_PROFILE = 'work-openrouter';
+    const previous = process.env.AGENT_WORKERS_PROFILE;
+    process.env.AGENT_WORKERS_PROFILE = 'work-openrouter';
     try {
       const fallbackConfig: Config = {
         ...config,
@@ -190,8 +190,8 @@ describe('JobManager pi backend', () => {
       expect((await fallback.profileStatus()).profile).toBe('default');
       await fallback.shutdown();
     } finally {
-      if (previous === undefined) delete process.env.DSH_WORKERS_PROFILE;
-      else process.env.DSH_WORKERS_PROFILE = previous;
+      if (previous === undefined) delete process.env.AGENT_WORKERS_PROFILE;
+      else process.env.AGENT_WORKERS_PROFILE = previous;
       await rm(temp, { recursive: true, force: true });
     }
   });

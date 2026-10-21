@@ -37,6 +37,12 @@ const STEER_SETTLE_TIMEOUT_MS = 30_000;
 const STEER_PREFACE =
   'The supervisor interrupted your previous run to steer you. Your earlier work in this session and working directory is preserved; check the current state before continuing.\n\nNew instruction:\n';
 
+function workerEnv(name: string): string | undefined {
+  const current = process.env[`AGENT_WORKERS_${name}`];
+  if (current !== undefined && current.trim() !== '') return current;
+  return process.env[`DSH_WORKERS_${name}`];
+}
+
 function steerLabel(previous: string | undefined, fallbackId: string): string {
   const base = previous?.trim() || fallbackId;
   const stacked = /\s↻(\d*)$/.exec(base);
@@ -287,10 +293,10 @@ export class JobManager {
 
   constructor(private readonly config: Config) {
     this.backend = config.backend ?? 'dsh';
-    this.defaultGroupId = process.env.DSH_WORKERS_SESSION_ID?.trim() || this.ownerId;
+    this.defaultGroupId = workerEnv('SESSION_ID')?.trim() || this.ownerId;
     this.defaultGroupName =
-      process.env.DSH_WORKERS_SESSION_NAME?.trim() || basename(process.cwd()) || 'dsh-workers';
-    const envProfile = process.env.DSH_WORKERS_PROFILE?.trim();
+      workerEnv('SESSION_NAME')?.trim() || basename(process.cwd()) || 'agent-workers';
+    const envProfile = workerEnv('PROFILE')?.trim();
     this.activeProfile =
       envProfile ||
       (this.backend === 'pi' ? (config.piDefaultProfile ?? 'default') : 'work-openrouter');
@@ -307,7 +313,7 @@ export class JobManager {
     const initialized = await Promise.all([this.engines.dsh.init(), this.engines.pi.init()]);
     const active = this.activeEngine();
     const profiles = await active.availableProfiles();
-    const configuredProfile = process.env.DSH_WORKERS_PROFILE?.trim();
+    const configuredProfile = workerEnv('PROFILE')?.trim();
     if (!configuredProfile) {
       if (!profiles.includes(this.activeProfile) && profiles.includes('headless')) {
         this.activeProfile = 'headless';
@@ -504,9 +510,9 @@ export class JobManager {
   async start(input: StartInput): Promise<StartResult> {
     if (this.shuttingDown)
       throw new JobError('worker_unavailable', 'the worker manager is shutting down');
-    const depth = Number(process.env.DSH_WORKERS_DEPTH ?? 0);
+    const depth = Number(workerEnv('DEPTH') ?? 0);
     if (!Number.isInteger(depth) || depth < 0) {
-      throw new JobError('depth_exceeded', 'DSH_WORKERS_DEPTH is invalid');
+      throw new JobError('depth_exceeded', 'AGENT_WORKERS_DEPTH is invalid');
     }
     if (depth >= this.config.maxDepth) {
       throw new JobError('depth_exceeded', `maximum worker depth ${this.config.maxDepth} reached`);
@@ -748,6 +754,7 @@ export class JobManager {
       const value = process.env[name];
       if (value !== undefined) env[name] = value;
     }
+    env.AGENT_WORKERS_DEPTH = String(depth);
     env.DSH_WORKERS_DEPTH = String(depth);
     return env;
   }
@@ -758,7 +765,7 @@ export class JobManager {
     // A queued/starting job can be cancelled (or steered) while the profile
     // check is in flight; do not spawn a process for a job that already settled.
     if (job.terminal || this.shuttingDown) return;
-    const depth = Number(process.env.DSH_WORKERS_DEPTH ?? 0) + 1;
+    const depth = Number(workerEnv('DEPTH') ?? 0) + 1;
     const plan = await engine.launch(
       {
         jobId: job.id,

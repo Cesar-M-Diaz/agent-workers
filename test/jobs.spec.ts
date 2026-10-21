@@ -65,9 +65,9 @@ describe('JobManager', () => {
   let previousProfileEnv: string | undefined;
 
   beforeAll(async () => {
-    previousProfileEnv = process.env.DSH_WORKERS_PROFILE;
-    delete process.env.DSH_WORKERS_PROFILE;
-    root = await mkdtemp(join(tmpdir(), 'dsh-workers-test-'));
+    previousProfileEnv = process.env.AGENT_WORKERS_PROFILE;
+    delete process.env.AGENT_WORKERS_PROFILE;
+    root = await mkdtemp(join(tmpdir(), 'agent-workers-test-'));
     repo = join(root, 'repo');
     await mkdir(repo);
     await runCapture('git', ['init', '-q'], { cwd: repo });
@@ -130,8 +130,8 @@ describe('JobManager', () => {
 
   afterAll(async () => {
     await manager.shutdown();
-    if (previousProfileEnv === undefined) delete process.env.DSH_WORKERS_PROFILE;
-    else process.env.DSH_WORKERS_PROFILE = previousProfileEnv;
+    if (previousProfileEnv === undefined) delete process.env.AGENT_WORKERS_PROFILE;
+    else process.env.AGENT_WORKERS_PROFILE = previousProfileEnv;
     await rm(root, { recursive: true, force: true });
   });
 
@@ -447,7 +447,7 @@ describe('JobManager', () => {
     }
   });
 
-  it('dsh_wait returns early with alerted when a watched job gains a new alert kind', async () => {
+  it('worker_wait returns early with alerted when a watched job gains a new alert kind', async () => {
     const started = await manager.start({ task: 'LOOP_DELAY', label: 'loop-wait' });
     const waitStarted = Date.now();
     const waited = await manager.wait([started.job_id], 'all', 5_000);

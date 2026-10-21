@@ -42,7 +42,7 @@ function parsePort(raw: string | undefined): number {
 
 function parseArgs(args: readonly string[]): CliOptions {
   const options: CliOptions = {
-    port: parsePort(process.env.DSH_WORKERS_UI_PORT),
+    port: parsePort(process.env.AGENT_WORKERS_UI_PORT ?? process.env.DSH_WORKERS_UI_PORT),
     open: true,
     detach: false,
     serve: false,
@@ -99,13 +99,13 @@ function parseArgs(args: readonly string[]): CliOptions {
 }
 
 function helpText(): string {
-  return `dsh-workers-ui ${VERSION}
+  return `agent-workers-ui ${VERSION}
 
 Usage:
-  dsh-workers-ui [options]
+  agent-workers-ui [options]
 
 Options:
-  --port <n>   Local HTTP port (default: ${DEFAULT_PORT} or DSH_WORKERS_UI_PORT)
+  --port <n>   Local HTTP port (default: ${DEFAULT_PORT} or AGENT_WORKERS_UI_PORT)
   --job <id>   Open the dashboard focused on one job
   --no-open    Do not open a browser
   --detach     Start a background dashboard and return
@@ -116,8 +116,8 @@ Options:
   --version    Show the version
 
 Environment:
-  DSH_WORKERS_STATE_DIR   Worker state directory
-  DSH_WORKERS_UI_PORT     Default dashboard port
+  AGENT_WORKERS_STATE_DIR   Worker state directory (legacy DSH_WORKERS_STATE_DIR accepted)
+  AGENT_WORKERS_UI_PORT     Default dashboard port (legacy DSH_WORKERS_UI_PORT accepted)
 `;
 }
 
@@ -188,7 +188,7 @@ async function streamDashboard(
       const jobs = await listDashboardJobs(stateDir);
       sendSse(res, 'jobs', {
         server: {
-          name: 'dsh-workers-ui',
+          name: 'agent-workers-ui',
           version: VERSION,
           state_dir: stateDir,
           retention_days: retentionDays,
@@ -270,7 +270,7 @@ export function createDashboardServer(stateDir: string, options: DashboardOption
         }
         if (url.pathname === '/api/health') {
           writeJson(res, 200, {
-            name: 'dsh-workers-ui',
+            name: 'agent-workers-ui',
             version: VERSION,
             state_dir: stateDir,
             retention_days: retentionDays,
@@ -281,7 +281,7 @@ export function createDashboardServer(stateDir: string, options: DashboardOption
         if (url.pathname === '/api/jobs') {
           writeJson(res, 200, {
             server: {
-              name: 'dsh-workers-ui',
+              name: 'agent-workers-ui',
               version: VERSION,
               state_dir: stateDir,
               retention_days: retentionDays,
@@ -367,7 +367,7 @@ async function dashboardHealth(port: number): Promise<DashboardHealth | undefine
     });
     if (!response.ok) return undefined;
     const body = (await response.json()) as DashboardHealth;
-    return body.name === 'dsh-workers-ui' ? body : undefined;
+    return body.name === 'agent-workers-ui' ? body : undefined;
   } catch {
     return undefined;
   }
@@ -453,7 +453,7 @@ async function startForeground(options: CliOptions): Promise<void> {
   });
   await listen(server, options.port);
   const url = statusUrl(options.port, options.job);
-  process.stdout.write(`dsh-workers ui ${VERSION}\n${url}\nstate: ${stateDir}\n`);
+  process.stdout.write(`agent-workers ui ${VERSION}\n${url}\nstate: ${stateDir}\n`);
   if (options.open) openBrowser(url);
 
   const shutdown = (): void => {
@@ -525,7 +525,7 @@ async function main(): Promise<void> {
 const entry = process.argv[1];
 if (entry !== undefined && resolve(entry) === fileURLToPath(import.meta.url)) {
   void main().catch((err: unknown) => {
-    process.stderr.write(`dsh-workers ui: ${err instanceof Error ? err.message : String(err)}\n`);
+    process.stderr.write(`agent-workers ui: ${err instanceof Error ? err.message : String(err)}\n`);
     process.exitCode = 1;
   });
 }

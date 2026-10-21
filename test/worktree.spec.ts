@@ -20,7 +20,7 @@ describe('cleanupWorktree', () => {
   let worktreeRoot: string;
 
   beforeAll(async () => {
-    root = await mkdtemp(join(tmpdir(), 'dsh-workers-worktree-test-'));
+    root = await mkdtemp(join(tmpdir(), 'agent-workers-worktree-test-'));
     repo = join(root, 'repo');
     worktreeRoot = join(root, 'worktrees');
     await mkdir(repo);

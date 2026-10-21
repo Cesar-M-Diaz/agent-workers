@@ -1,96 +1,118 @@
-# dsh-workers
+# agent-workers
 
 A Claude Code plugin and its own marketplace for running DeepSeek Harness
-(`dsh`) headless workers in parallel. One install brings the MCP server, the
-`dsh-parallel` skill, the `/dsh-*` slash commands, and a native pane.
+(`dsh`) or pi headless workers in parallel. One install brings the MCP server,
+the `parallel` skill, the `/agent-workers:*` slash commands, and a native pane.
 
 This is an independent personal project. It is not an official DeepSeek package
 and is not part of N|Solid or NodeSource.
 
-The server uses one `dsh --profile <profile> --json` process per job. It provides
-a bounded FIFO queue, wall-clock timeouts, process-group cancellation, optional
-git worktree isolation, session grouping, artifact-based results, automatic
-retention for terminal jobs, pure heuristic watchdogs, and session steering
-through `dsh_steer`.
+The server uses one `dsh --profile <profile> --json` or `pi --mode json` process
+per job. It provides a bounded FIFO queue, wall-clock timeouts, process-group
+cancellation, optional git worktree isolation, session grouping, artifact-based
+results, automatic retention for terminal jobs, pure heuristic watchdogs, and
+session steering through `worker_steer` (dsh only in 0.4).
 
 ```text
-Claude Code plugin "dsh-workers"
-  ├── MCP server "dsh-workers" (plugin-dist/server.mjs)
-  │     └── one dsh --profile <profile> --json process per job
-  │           └── provider/model from the dsh profile
-  ├── skill: dsh-parallel
-  ├── commands: /dsh-workers:dsh-start, ...
+Claude Code plugin "agent-workers"
+  ├── MCP server "agent-workers" (plugin-dist/server.mjs)
+  │     └── one dsh or pi process per job
+  │           └── provider/model from the backend profile
+  ├── skill: parallel
+  ├── commands: /agent-workers:start, ...
   └── pane: live job cards beside the conversation
 ```
 
-These workers are separate DSH processes. They are not Claude `Task` calls and
-do not appear in the DSH TUI native subagent side panel.
+These workers are separate dsh or pi processes. They are not Claude `Task` calls
+and do not appear in the DSH TUI native subagent side panel.
+
+## Backends
+
+`backend` selects the worker engine:
+
+- `dsh` (default): one `dsh --profile <profile> --json` process per job. The
+  profile comes from `$AGENT_WORKERS_DSH_HOME/profiles`; read-only and
+  workspace-write are enforced with `DSH_PERMISSION_MODE`.
+- `pi`: one `pi --mode json` process per job, task on stdin, one session per job.
+  `profile` is `default`, a model pattern such as
+  `openrouter/deepseek/deepseek-v4.1-flash-1017:low`, or a named profile from
+  `pi_profiles_file`. pi workers are read-only by default: `pi_allow_write`
+  (or `AGENT_WORKERS_PI_ALLOW_WRITE=1`) enables workspace-write, which should
+  only be used with worktree isolation. pi has no sandbox; read the security
+  section before enabling writes. Resume and steer for pi are disabled in 0.4.
+
+pi workers inherit the user's pi auth through `~/.pi/agent/auth.json`, or use
+`pi_agent_dir` to point at a dedicated `PI_CODING_AGENT_DIR`. Provider API keys
+are not passed through the worker environment allowlist.
 
 ## How it works
 
 A typical delegation, end to end:
 
 1. You ask Claude for work that splits into independent pieces. The
-   `dsh-parallel` skill tells Claude when to delegate and how to write a
+   `parallel` skill tells Claude when to delegate and how to write a
    self-contained task, because a worker never sees your conversation.
-2. Claude calls `dsh_start`. Code changes run as `workspace-write` in a fresh
+2. Claude calls `worker_start`. Code changes run as `workspace-write` in a fresh
    git worktree (`<state>/worktrees/<job>`, branch `dsh/<job>`); read-only work
    runs in place. The server queues the job and spawns
-   `dsh --profile <profile> --json`, feeding the task on stdin.
+   `dsh --profile <profile> --json` or `pi --mode json`, feeding the task on
+   stdin.
 3. The worker's NDJSON events are appended to `<state>/jobs/<job>/events.ndjson`
    and folded into `job.json`. The pane and the dashboard read those files
    directly, so you watch progress without any model calls.
-4. Claude waits with `dsh_wait`. Watchdogs flag stalls, loops, repeated tool
+4. Claude waits with `worker_wait`. Watchdogs flag stalls, loops, repeated tool
    errors and budget overruns; a new alert wakes the wait (`alerted`) so Claude
-   can inspect `dsh_events` and correct the worker with `dsh_steer`, which
-   cancels it and resumes the same DSH session with a new instruction.
-5. Claude reads `dsh_result` (final answer plus the worktree diff), verifies it
+   can inspect `worker_events` and correct the worker with `worker_steer`, which
+   cancels it and resumes the same dsh session with a new instruction. pi
+   steering is disabled in 0.4.
+5. Claude reads `worker_result` (final answer plus the worktree diff), verifies it
    against the project's checks, and applies or rejects it.
-6. Claude deletes or cleans the job in the same turn (`dsh_delete` /
-   `dsh_cleanup`). You can do the same from the pane's buttons.
+6. Claude deletes or cleans the job in the same turn (`worker_delete` /
+   `worker_cleanup`). You can do the same from the pane's buttons.
 
-A worker cannot receive messages while it runs: `dsh` headless answers one task
-and exits. Steering is always cancel + resume.
+A worker cannot receive messages while it runs: dsh headless and `pi --mode json`
+answer one task and exit. Steering is always cancel + resume, and only dsh
+supports it in 0.4.
 
 ## Install
 
 The repository is both the plugin and its marketplace:
 
 ```text
-/plugin install dsh-workers --marketplace Cesar-M-Diaz/dsh-workers
+/plugin install agent-workers --marketplace Cesar-M-Diaz/agent-workers
 ```
 
 Or register the marketplace first and install by name:
 
 ```text
-/plugin marketplace add Cesar-M-Diaz/dsh-workers
-/plugin install dsh-workers@dsh-workers
+/plugin marketplace add Cesar-M-Diaz/agent-workers
+/plugin install agent-workers@agent-workers
 ```
 
 To install from a local clone (no push needed), register the folder as the
 marketplace:
 
 ```sh
-claude plugin marketplace add /path/to/dsh-workers
-claude plugin install dsh-workers@dsh-workers
+claude plugin marketplace add /path/to/agent-workers
+claude plugin install agent-workers@agent-workers
 # after editing the clone: bump the version in .claude-plugin/plugin.json, then
-claude plugin marketplace update dsh-workers
-claude plugin update dsh-workers@dsh-workers
+claude plugin marketplace update agent-workers
+claude plugin update agent-workers@agent-workers
 ```
 
 To run a working copy for one session without installing:
 
 ```sh
-claude --plugin-dir /path/to/dsh-workers
+claude --plugin-dir /path/to/agent-workers
 ```
 
 Then set the plugin's `userConfig` values. The interactive `/plugin` installer
 asks for them; a CLI install leaves them unset. Either way you can set them
-later with `/plugin configure dsh-workers@dsh-workers`, or from a shell:
+later with `/plugin configure agent-workers@agent-workers`, or from a shell:
 
 ```sh
 echo '{"allowed_roots":"/home/me/work:/home/me/projects","dsh_bin":"/home/me/.volta/bin/dsh","use_dsh_credentials":"true"}' \
-  | claude plugin configure dsh-workers@dsh-workers --values-stdin
+  | claude plugin configure agent-workers@agent-workers --values-stdin
 ```
 
 Values are stored in `pluginConfigs` in your settings and passed to the MCP
@@ -108,24 +130,33 @@ provides the same server, and enabling both duplicates every tool.
 
 | `userConfig` key | MCP environment variable | Default | Meaning |
 | --- | --- | --- | --- |
-| `allowed_roots` | `DSH_WORKERS_ALLOWED_ROOTS` | empty → MCP process cwd | Colon- or comma-separated directories workers may use. |
-| `dsh_bin` | `DSH_WORKERS_DSH_BIN` | empty → `dsh` on `PATH` | Absolute path to the `dsh` executable. |
-| `state_dir` | `DSH_WORKERS_STATE_DIR` | `$XDG_STATE_HOME/dsh-workers` or `~/.local/state/dsh-workers` | Job metadata, logs, worktrees, and the shared DSH home. |
-| `use_dsh_credentials` | `DSH_WORKERS_USE_DSH_CREDENTIALS` | `false` | Read provider keys from `~/.dsh/.credentials.yaml` when they are not in the worker environment. |
-| `max_concurrent` | `DSH_WORKERS_MAX_CONCURRENT` | `3` | Hard maximum 8. |
-| `profile` | `DSH_WORKERS_PROFILE` | `work-openrouter`, falling back to `headless` | Starting DSH profile. Empty uses the server default. |
+| `allowed_roots` | `AGENT_WORKERS_ALLOWED_ROOTS` | empty → MCP process cwd | Colon- or comma-separated directories workers may use. |
+| `backend` | `AGENT_WORKERS_BACKEND` | `dsh` | `dsh` or `pi`. |
+| `dsh_bin` | `AGENT_WORKERS_DSH_BIN` | empty → `dsh` on `PATH` | Absolute path to the `dsh` executable. |
+| `pi_bin` | `AGENT_WORKERS_PI_BIN` | empty → `pi` on `PATH` | Absolute path to the `pi` executable. |
+| `state_dir` | `AGENT_WORKERS_STATE_DIR` | an existing `~/.local/state/dsh-workers`, else `$XDG_STATE_HOME/agent-workers` or `~/.local/state/agent-workers` | Job metadata, logs, worktrees, and the shared DSH home. |
+| `use_dsh_credentials` | `AGENT_WORKERS_USE_DSH_CREDENTIALS` | `false` | Read provider keys from `~/.dsh/.credentials.yaml` when they are not in the worker environment (dsh backend). |
+| `max_concurrent` | `AGENT_WORKERS_MAX_CONCURRENT` | `3` | Hard maximum 8. |
+| `profile` | `AGENT_WORKERS_PROFILE` | `work-openrouter` (dsh) or `default` (pi) | dsh profile name, pi model pattern, or named pi profile. |
+| `pi_model` | `AGENT_WORKERS_PI_MODEL` | empty → pi's configured model | Model for the `default` pi profile. |
+| `pi_thinking` | `AGENT_WORKERS_PI_THINKING` | empty → pi's configured level | off, minimal, low, medium, high, xhigh or max. |
+| `pi_agent_dir` | `AGENT_WORKERS_PI_AGENT_DIR` | empty → user's pi config | Dedicated `PI_CODING_AGENT_DIR` for workers. |
+| `pi_profiles_file` | `AGENT_WORKERS_PI_PROFILES_FILE` | `<state_dir>/pi-profiles.json` | Named pi profiles. |
+| `pi_allow_write` | `AGENT_WORKERS_PI_ALLOW_WRITE` | `false` | Allow `workspace-write` for pi; use only with worktree isolation. |
 | `pane_background` | — (pane only) | empty → Claude Code's pane fill | `#rrggbb` background for the pane, e.g. your terminal's, so it matches the chat. |
 
 The substitution uses the documented `${user_config.KEY}` form inside the MCP
 server's `env`. Empty values are safe: the server treats them as unset and uses
 its built-in defaults. The pane reads the same `state_dir` — it uses the plugin's
-`userConfig` value first, then `$DSH_WORKERS_STATE_DIR`, then
-`$XDG_STATE_HOME/dsh-workers`, then `$HOME/.local/state/dsh-workers`.
+`userConfig` value first, then `$AGENT_WORKERS_STATE_DIR` (or legacy
+`$DSH_WORKERS_STATE_DIR`), then an existing `~/.local/state/dsh-workers`, then
+`$XDG_STATE_HOME/agent-workers` or `$HOME/.local/state/agent-workers`.
 
-### Migrating from the standalone setup
+### Migrating from dsh-workers 0.3.x
 
-The plugin replaces the old user-scope MCP entry, the copied skill, and the
-copied commands. Remove the old pieces so there is one source of truth:
+The plugin was renamed because dsh is now one of two backends. The short version
+is in [`docs/MIGRATION.md`](docs/MIGRATION.md); the old standalone setup also
+needs these removals:
 
 ```sh
 claude mcp remove dsh-workers -s user
@@ -133,18 +164,19 @@ rm -rf ~/.claude/skills/dsh-parallel
 rm -f ~/.claude/commands/dsh-*.md
 ```
 
-Also remove any `dsh-workers` entry from a project `.mcp.json` or from
-`~/.claude.json` that points at the old `dist/server.js`. Install the plugin and
-let it provide `plugin-dist/server.mjs`. Your job state under
-`~/.local/state/dsh-workers` is compatible and is reused; choose the same
-`state_dir` in the plugin settings.
+Remove any old `dsh-workers` entry from a project `.mcp.json` or
+`~/.claude.json` that points at the old `dist/server.js`. Install the new plugin
+and let it provide `plugin-dist/server.mjs`. Job state under
+`~/.local/state/dsh-workers` is compatible and is reused; the new default
+prefers it when it already exists.
 
 ## Requirements
 
 - Node 24+
 - pnpm 10+ for development
-- `dsh` and a DeepSeek, OpenRouter or OpenCode Go credential available to the
-  worker process
+- `dsh` and a DeepSeek, OpenRouter or OpenCode Go credential for the dsh
+  backend
+- `pi` and its auth for the pi backend (optional)
 - Writable state and DSH home directories
 
 ## Build, bundle, and test
@@ -173,7 +205,7 @@ Run `pnpm bundle` after changing anything under `src/` that must ship in the
 plugin, then commit `plugin-dist/`. The bundle is deterministic; `pnpm bundle`
 must produce byte-identical output for the same sources. `pnpm test` includes a
 freshness check and a stdio smoke test that answers `initialize` and
-`tools/list` with `dsh_steer` and the other ten tools.
+`tools/list` with `worker_steer` and the other ten tools.
 
 ## Live dashboard
 
@@ -238,7 +270,7 @@ by any session show up without an MCP round trip.
 
 ### What it shows
 
-- **Header:** `DSH Workers` in the accent color with a `this project` / `all`
+- **Header:** `Agent Workers` in the accent color with a `this project` / `all`
   toggle on the right. Below it, a status summary of the visible rows, for
   example `◌ 2 running · ○ 1 queued · ✓ 5 · ✗ 1`; zero segments are omitted and
   an empty list reads `idle`. A dim third line totals the visible rows' cost
@@ -304,9 +336,9 @@ minus border and padding) and truncated with `…` rather than wrapped.
 The first match wins:
 
 1. The `state_dir` value in the plugin's `userConfig`.
-2. `$DSH_WORKERS_STATE_DIR`
-3. `$XDG_STATE_HOME/dsh-workers`
-4. `$HOME/.local/state/dsh-workers`
+2. `$AGENT_WORKERS_STATE_DIR`
+3. `$XDG_STATE_HOME/agent-workers`
+4. `$HOME/.local/state/agent-workers`
 
 Under that directory the pane reads:
 
@@ -376,10 +408,10 @@ progress bar or `x/y`.
 ### Terminal placement
 
 A pane opened by the plugin at session start is unasked, so it waits undrawn
-below **144 terminal columns**. Once the person has opened `dsh-workers`
+below **144 terminal columns**. Once the person has opened `agent-workers`
 manually, the floor is **110 columns**. On a fullscreen terminal from **110
 columns** the pane docks beside the chat; otherwise it draws inline above the
-prompt. `/dsh-workers:dsh-pane` is the person's own request, so it is placed at
+prompt. `/agent-workers:pane` is the person's own request, so it is placed at
 any width.
 
 ### `job.json` writes are atomic
@@ -392,24 +424,27 @@ fails for another reason (a permissions error, a file from an older server).
 
 ## Headless credentials
 
-The worker profiles disable the DSH managed credential store. A worker can
+The dsh worker profiles disable the DSH managed credential store. A worker can
 receive `DEEPSEEK_API_KEY`, `OPENROUTER_CHAT_API_KEY` or `OPENCODE_GO_API_KEY`
 explicitly, or read the references from the DSH credential store when
-`DSH_WORKERS_USE_DSH_CREDENTIALS=1`. The worker profile decides which provider
+`AGENT_WORKERS_USE_DSH_CREDENTIALS=1`. The worker profile decides which provider
 and model the worker uses.
 
 Precedence is deliberate: a provider variable that is explicitly present in the
 MCP server's environment wins over the same reference in the credentials file.
 The plugin's `use_dsh_credentials` setting only fills keys that are otherwise
-absent. The jobs test clears the provider variables for its isolated manager so
+absent. pi does not use the dsh credential store: it reads its own
+`~/.pi/agent/auth.json` (or the `PI_CODING_AGENT_DIR` set with `pi_agent_dir`).
+Provider API keys are not forwarded through `AGENT_WORKERS_ENV_ALLOW` by
+default. The jobs test clears the provider variables for its isolated manager so
 an exported developer key cannot change the expected value; it restores them
 without printing them.
 
 ## Worker profiles
 
-Profiles live under `$DSH_WORKERS_DSH_HOME/profiles`. The server starts in
-`DSH_WORKERS_PROFILE` (default `work-openrouter`, falling back to `headless`),
-and `dsh_profile` switches the profile for the current MCP session. `dsh_start`
+Profiles live under `$AGENT_WORKERS_DSH_HOME/profiles`. The server starts in
+`AGENT_WORKERS_PROFILE` (default `work-openrouter`, falling back to `headless`),
+and `worker_profile` switches the profile for the current MCP session. `worker_start`
 also accepts `profile` for a single job; existing jobs keep their profile,
 including when resumed.
 
@@ -424,20 +459,45 @@ For example, a setup with one work and two personal providers could use:
 Profile names are free-form; only `work-openrouter` and `headless` have a
 meaning to the server, as the default starting profile and its fallback (or set
 `profile` in the plugin settings). Create a directory per profile with the same
-files (including `metadata.json`); `dsh_profile` lists them dynamically.
+files (including `metadata.json`); `worker_profile` lists them dynamically.
 
 Each profile also has a `metadata.json` with its `provider` and `model`. The
 server copies that metadata into every job so the dashboard can estimate cost;
 keep it in sync with `cordis.patch.yml` when changing the model.
 
+### pi profiles
+
+pi has no profile directories. A pi profile is one of:
+
+- `default`: use pi's configured model, optionally overridden by `pi_model`
+  and `pi_thinking`;
+- a model pattern: `provider/model` with an optional `:<thinking>` suffix, for
+  example `openrouter/deepseek/deepseek-v4.1-flash-1017:low`;
+- a named entry in `pi_profiles_file` (`<state_dir>/pi-profiles.json`):
+
+```json
+{
+  "deep-flash": {
+    "provider": "openrouter",
+    "model": "deepseek/deepseek-v4.1-flash-1017",
+    "thinking": "low"
+  }
+}
+```
+
+The server resolves pi profiles with the pi backend; a dsh profile name is not
+valid for pi (and vice versa). If the shared `profile` setting is a dsh name
+while `backend=pi`, the server falls back to `default` and logs
+`profile_fallback`.
+
 ## Claude skill
 
-The plugin ships the skill at `skills/dsh-parallel/SKILL.md`; nothing needs to
-be copied. It is available as `/dsh-workers:dsh-parallel` and is loaded
+The plugin ships the skill at `skills/parallel/SKILL.md`; nothing needs to
+be copied. It is available as `/agent-workers:parallel` and is loaded
 automatically when a task matches its description.
 
 The skill makes cleanup mandatory: after reviewing a result and applying,
-merging, or rejecting its diff, it calls `dsh_delete` (or `dsh_cleanup` to keep
+merging, or rejecting its diff, it calls `worker_delete` (or `worker_cleanup` to keep
 the record) in the same turn. Read-only jobs have no worktree, so their records
 are deleted once the result is reported. Dirty worktrees whose changes were not
 applied anywhere require the user's confirmation before `discard_changes: true`.
@@ -448,24 +508,24 @@ The plugin ships these commands; the plugin prefix is part of the command name:
 
 | Command | Purpose |
 | --- | --- |
-| `/dsh-workers:dsh-start <task>` | Start one self-contained DSH worker. |
-| `/dsh-workers:dsh-status [job ...]` | Show worker status and progress counters. |
-| `/dsh-workers:dsh-events <job> [cursor]` | Read a cursor-based page of live step events. |
-| `/dsh-workers:dsh-wait <job ...>` | Wait for jobs with a bounded timeout. |
-| `/dsh-workers:dsh-result <job>` | Read final answer, tails, and worktree changes. |
-| `/dsh-workers:dsh-cancel <job>` | Cancel a queued or running worker. |
-| `/dsh-workers:dsh-steer <job> <message>` | Cancel if active and resume the session with a corrective instruction. |
-| `/dsh-workers:dsh-cleanup <job>` | Clean up a terminal worktree. |
-| `/dsh-workers:dsh-delete <job>` | Delete a terminal job record and its files. |
-| `/dsh-workers:dsh-profile [profile]` | Read or switch the DSH profile. |
-| `/dsh-workers:dsh-ui [start\|stop\|status\|restart]` | Control the live dashboard. |
-| `/dsh-workers:dsh-watch <job>` | Open the dashboard focused on one job. |
-| `/dsh-workers:dsh-pane` | Open the DSH workers pane. |
+| `/agent-workers:start <task>` | Start one self-contained worker. |
+| `/agent-workers:status [job ...]` | Show worker status and progress counters. |
+| `/agent-workers:events <job> [cursor]` | Read a cursor-based page of live step events. |
+| `/agent-workers:wait <job ...>` | Wait for jobs with a bounded timeout. |
+| `/agent-workers:result <job>` | Read final answer, tails, and worktree changes. |
+| `/agent-workers:cancel <job>` | Cancel a queued or running worker. |
+| `/agent-workers:steer <job> <message>` | Cancel if active and resume the session with a corrective instruction. |
+| `/agent-workers:cleanup <job>` | Clean up a terminal worktree. |
+| `/agent-workers:delete <job>` | Delete a terminal job record and its files. |
+| `/agent-workers:profile [profile]` | Read or switch the backend profile. |
+| `/agent-workers:ui [start\|stop\|status\|restart]` | Control the live dashboard. |
+| `/agent-workers:watch <job>` | Open the dashboard focused on one job. |
+| `/agent-workers:pane` | Open the Agent Workers pane. |
 
 Custom Claude commands are prompt templates: they instruct Claude to call the
 MCP tools; they do not bypass the model or the MCP permission rules. The
 commands reference the plugin's MCP tools by their namespaced tool names, for
-example `mcp__plugin_dsh-workers_dsh-workers__dsh_delete`. The dashboard
+example `mcp__plugin_agent-workers_agent-workers__worker_delete`. The dashboard
 commands run `${CLAUDE_PLUGIN_ROOT}/plugin-dist/ui.mjs`.
 
 ## Job lifecycle and cleanup
@@ -473,10 +533,10 @@ commands run `${CLAUDE_PLUGIN_ROOT}/plugin-dist/ui.mjs`.
 Cleanup is part of finishing a delegation, not an optional epilogue.
 
 - After reviewing a job's result, once its diff has been applied to the user's
-  tree, merged, or rejected, call `dsh_delete` (or `dsh_cleanup` to keep the
+  tree, merged, or rejected, call `worker_delete` (or `worker_cleanup` to keep the
   record) in the same turn. Do not leave finished worktrees behind.
-- `dsh_delete` removes the terminal record, logs, and a clean worktree/branch.
-  `dsh_cleanup` removes the worktree and branch but keeps the record.
+- `worker_delete` removes the terminal record, logs, and a clean worktree/branch.
+  `worker_cleanup` removes the worktree and branch but keeps the record.
 - If the worktree is dirty and its changes were **not** applied anywhere, ask
   the user before retrying with `discard_changes: true`. Never discard unmerged
   work silently.
@@ -484,16 +544,16 @@ Cleanup is part of finishing a delegation, not an optional epilogue.
   reported, unless the user wants history.
 - The pane's expanded terminal cards have `cleanup` and `delete` buttons; each
   needs a second confirming press. A dirty worktree adds `discard & clean` /
-  `discard & delete`. For manual use, run `/dsh-workers:dsh-cleanup` or
-  `/dsh-workers:dsh-delete`.
-- Terminal job records are retained for `DSH_WORKERS_RETENTION_DAYS` days
+  `discard & delete`. For manual use, run `/agent-workers:cleanup` or
+  `/agent-workers:delete`.
+- Terminal job records are retained for `AGENT_WORKERS_RETENTION_DAYS` days
   (default `7`). Automatic retention never deletes a job with a dirty worktree
   or commits that are not reachable from the base revision. Those records stay
   until review.
 - Active or queued jobs cannot be deleted.
 
 The skill should pass the stable `group_id` and `group_name` on every
-`dsh_start`, and should reuse every returned `job_id` for status, events, result,
+`worker_start`, and should reuse every returned `job_id` for status, events, result,
 cancel, cleanup, and delete calls instead of asking the user to type ids.
 
 ## Configuration
@@ -503,72 +563,79 @@ DSH home, patches, or unrestricted permissions.
 
 | Variable | Default | Meaning |
 | --- | --- | --- |
-| `DSH_WORKERS_DSH_BIN` | `dsh` | Absolute path recommended. |
-| `DSH_WORKERS_ALLOWED_ROOTS` | MCP process cwd | Colon- or comma-separated directories. |
-| `DSH_WORKERS_STATE_DIR` | `$XDG_STATE_HOME/dsh-workers` or `~/.local/state/dsh-workers` | Job metadata and logs; mode 0700. |
-| `DSH_WORKERS_WORKTREE_ROOT` | `<state>/worktrees` | Git worktrees created by the server. |
-| `DSH_WORKERS_DSH_HOME` | `<state>/dsh-home` | Shared DSH profile and session store. |
-| `DSH_WORKERS_PROFILE` | `work-openrouter` (fallback `headless`) | Starting profile for new workers. |
-| `DSH_WORKERS_MAX_CONCURRENT` | `3` | Hard maximum 8. |
-| `DSH_WORKERS_MAX_QUEUE` | `16` | Bounded queue. |
-| `DSH_WORKERS_DEFAULT_TIMEOUT_S` | `1200` | Default per-job wall clock. |
-| `DSH_WORKERS_MAX_TIMEOUT_S` | `3600` | Tool argument ceiling. |
-| `DSH_WORKERS_MAX_DEPTH` | `2` | Recursion guard through `DSH_WORKERS_DEPTH`. |
-| `DSH_WORKERS_RETENTION_DAYS` | `7` | Delete terminal job records after this many days; `0` disables. |
-| `DSH_WORKERS_SESSION_ID` | MCP instance id | Default parent-session id for new jobs. |
-| `DSH_WORKERS_SESSION_NAME` | current directory name | Default parent-session display name. |
-| `DSH_WORKERS_USE_DSH_CREDENTIALS` | off | Read `DEEPSEEK_API_KEY`, `OPENROUTER_CHAT_API_KEY` and `OPENCODE_GO_API_KEY` from the configured credential file. |
-| `DSH_WORKERS_CREDENTIALS_FILE` | `~/.dsh/.credentials.yaml` | Used only when the credential opt-in is on. |
-| `DSH_WORKERS_ENV_ALLOW` | empty | Extra environment variable names allowed into workers. |
-| `DSH_WORKERS_UI_PORT` | `47100` | Default live dashboard port. |
-| `DSH_WORKERS_STALL_S` | `120` | Warn when an active job has no event for this many seconds (30..3600). |
-| `DSH_WORKERS_LOOP_REPEAT` | `4` | Warn when the same tool call repeats this many times in the last 10 calls (2..20). |
-| `DSH_WORKERS_TOOL_ERROR_LIMIT` | `5` | Warn when this many of the last 10 tool results are not `completed` (1..50). |
-| `DSH_WORKERS_MAX_STEPS` | unset | Warn (or cancel) when a job exceeds this many steps. Off by default. |
-| `DSH_WORKERS_MAX_COST_USD` | unset | Warn (or cancel) when the estimated cost exceeds this USD amount. Off by default. |
-| `DSH_WORKERS_WATCHDOG_ACTION` | `warn` | `warn` or `cancel`; `cancel` only applies to the budget watchdog. |
+| `AGENT_WORKERS_BACKEND` | `dsh` | `dsh` or `pi`. |
+| `AGENT_WORKERS_DSH_BIN` | `dsh` | Absolute path recommended. |
+| `AGENT_WORKERS_PI_BIN` | `pi` | Absolute path recommended. |
+| `AGENT_WORKERS_ALLOWED_ROOTS` | MCP process cwd | Colon- or comma-separated directories. |
+| `AGENT_WORKERS_STATE_DIR` | an existing `~/.local/state/dsh-workers`, else `$XDG_STATE_HOME/agent-workers` or `~/.local/state/agent-workers` | Job metadata and logs; mode 0700. Legacy `DSH_WORKERS_STATE_DIR` accepted. |
+| `AGENT_WORKERS_WORKTREE_ROOT` | `<state>/worktrees` | Git worktrees created by the server. |
+| `AGENT_WORKERS_DSH_HOME` | `<state>/dsh-home` | Shared DSH profile and session store. |
+| `AGENT_WORKERS_PROFILE` | `work-openrouter` (dsh) or `default` (pi) | dsh profile, pi model pattern, or named pi profile. |
+| `AGENT_WORKERS_PI_MODEL` | unset | Model for the pi `default` profile. |
+| `AGENT_WORKERS_PI_THINKING` | unset | Thinking level for the pi `default` profile. |
+| `AGENT_WORKERS_PI_AGENT_DIR` | unset | `PI_CODING_AGENT_DIR` for pi workers. |
+| `AGENT_WORKERS_PI_PROFILES_FILE` | `<state>/pi-profiles.json` | Named pi profiles. |
+| `AGENT_WORKERS_PI_ALLOW_WRITE` | off | Allow pi `workspace-write`; use only with worktree isolation. |
+| `AGENT_WORKERS_MAX_CONCURRENT` | `3` | Hard maximum 8. |
+| `AGENT_WORKERS_MAX_QUEUE` | `16` | Bounded queue. |
+| `AGENT_WORKERS_DEFAULT_TIMEOUT_S` | `1200` | Default per-job wall clock. |
+| `AGENT_WORKERS_MAX_TIMEOUT_S` | `3600` | Tool argument ceiling. |
+| `AGENT_WORKERS_MAX_DEPTH` | `2` | Recursion guard through `AGENT_WORKERS_DEPTH`. |
+| `AGENT_WORKERS_RETENTION_DAYS` | `7` | Delete terminal job records after this many days; `0` disables. |
+| `AGENT_WORKERS_SESSION_ID` | MCP instance id | Default parent-session id for new jobs. |
+| `AGENT_WORKERS_SESSION_NAME` | current directory name | Default parent-session display name. |
+| `AGENT_WORKERS_USE_DSH_CREDENTIALS` | off | Read `DEEPSEEK_API_KEY`, `OPENROUTER_CHAT_API_KEY` and `OPENCODE_GO_API_KEY` from the configured credential file. |
+| `AGENT_WORKERS_CREDENTIALS_FILE` | `~/.dsh/.credentials.yaml` | Used only when the credential opt-in is on. |
+| `AGENT_WORKERS_ENV_ALLOW` | empty | Extra environment variable names allowed into workers. |
+| `AGENT_WORKERS_UI_PORT` | `47100` | Default live dashboard port. |
+| `AGENT_WORKERS_STALL_S` | `120` | Warn when an active job has no event for this many seconds (30..3600). |
+| `AGENT_WORKERS_LOOP_REPEAT` | `4` | Warn when the same tool call repeats this many times in the last 10 calls (2..20). |
+| `AGENT_WORKERS_TOOL_ERROR_LIMIT` | `5` | Warn when this many of the last 10 tool results are not `completed` (1..50). |
+| `AGENT_WORKERS_MAX_STEPS` | unset | Warn (or cancel) when a job exceeds this many steps. Off by default. |
+| `AGENT_WORKERS_MAX_COST_USD` | unset | Warn (or cancel) when the estimated cost exceeds this USD amount. Off by default. |
+| `AGENT_WORKERS_WATCHDOG_ACTION` | `warn` | `warn` or `cancel`; `cancel` only applies to the budget watchdog. |
 
 The server passes a small environment allowlist to workers and always forces
 `DSH_PERMISSION_MODE=read-only` or `workspace-write`. It never exposes
 `danger-full-access`.
 
 If a configured state directory is on a read-only filesystem, the server logs
-`state_dir_fallback` to stderr and uses `$TMPDIR/dsh-workers/{state,worktrees,dsh-home}`
+`state_dir_fallback` to stderr and uses `$TMPDIR/agent-workers/{state,worktrees,dsh-home}`
 instead. That keeps a user-scoped MCP usable on managed machines with a read-only
 home, but the fallback state is temporary.
 
 ## MCP tools
 
-- `dsh_start`: start a worker and return a job id immediately; accepts `group_id`, `group_name`, and an optional `profile`.
-- `dsh_group`: read or set the parent-session group used by new jobs.
-- `dsh_profile`: read or switch the DSH profile for this MCP session.
-- `dsh_status`: inspect running and queued jobs, including token breakdown, estimated cost, and watchdog alerts.
-- `dsh_wait`: wait for any or all jobs, with a bounded timeout; returns early with `alerted` when a watched job gains a new alert kind.
-- `dsh_result`: read the final answer, stderr tail, worktree diff, usage and estimated cost.
-- `dsh_events`: read a cursor-based page of live NDJSON events.
-- `dsh_cancel`: cancel a queued or running job.
-- `dsh_steer`: cancel a queued or running job (settled as `cancelled`/`steered`) and resume its DSH session with a self-contained corrective message; a terminal job is resumed without a cancel.
-- `dsh_cleanup`: remove a finished worktree and branch.
-- `dsh_delete`: delete a terminal job record, logs, and its clean worktree.
+- `worker_start`: start a worker and return a job id immediately; accepts `group_id`, `group_name`, and an optional `profile`.
+- `worker_group`: read or set the parent-session group used by new jobs.
+- `worker_profile`: read or switch the active backend profile for this MCP session.
+- `worker_status`: inspect running and queued jobs, including token breakdown, estimated cost, and watchdog alerts.
+- `worker_wait`: wait for any or all jobs, with a bounded timeout; returns early with `alerted` when a watched job gains a new alert kind.
+- `worker_result`: read the final answer, stderr tail, worktree diff, usage and estimated cost.
+- `worker_events`: read a cursor-based page of live NDJSON events.
+- `worker_cancel`: cancel a queued or running job.
+- `worker_steer`: cancel a queued or running job (settled as `cancelled`/`steered`) and resume its dsh session with a self-contained corrective message; a terminal job is resumed without a cancel. pi steering is disabled in 0.4.
+- `worker_cleanup`: remove a finished worktree and branch.
+- `worker_delete`: delete a terminal job record, logs, and its clean worktree.
 
 ## Watchdogs
 
 The server folds each worker's NDJSON events and recomputes alerts on every
 event and about every five seconds, with no model calls:
 
-- `stalled`: no event for `DSH_WORKERS_STALL_S` seconds;
-- `loop`: the same tool with identical input at least `DSH_WORKERS_LOOP_REPEAT`
+- `stalled`: no event for `AGENT_WORKERS_STALL_S` seconds;
+- `loop`: the same tool with identical input at least `AGENT_WORKERS_LOOP_REPEAT`
   times in the last 10 tool calls;
-- `tool_errors`: at least `DSH_WORKERS_TOOL_ERROR_LIMIT` non-`completed` tool
+- `tool_errors`: at least `AGENT_WORKERS_TOOL_ERROR_LIMIT` non-`completed` tool
   results in the last 10 results;
 - `budget`: steps or estimated cost above the optional limits.
 
-Alerts are stored in `job.json` and reported by `dsh_status`, `dsh_wait`,
-`dsh_group`, and the dashboard. `DSH_WORKERS_WATCHDOG_ACTION=cancel` stops a
+Alerts are stored in `job.json` and reported by `worker_status`, `worker_wait`,
+`worker_group`, and the dashboard. `AGENT_WORKERS_WATCHDOG_ACTION=cancel` stops a
 budget-exceeding job as `cancelled` with reason `budget_exceeded`; all other
-alerts remain warnings. `dsh_wait` reports jobs that gained a new alert kind in
-`alerted`, so the caller can inspect with `dsh_events` and decide whether to
-`dsh_steer`.
+alerts remain warnings. `worker_wait` reports jobs that gained a new alert kind in
+`alerted`, so the caller can inspect with `worker_events` and decide whether to
+`worker_steer`.
 
 ## Pricing
 
@@ -588,8 +655,11 @@ provider changes prices.
 
 ## Security boundary
 
-The DSH sandbox governs file writes; it does not hide the readable home
-directory or close the network. Do not delegate secrets, production actions, or
+The dsh sandbox governs file writes; it does not hide the readable home
+directory or close the network. pi has no sandbox: its `read-only` mode is a
+tool allowlist (`read,grep,find,ls` with no MCP or extensions), and
+`workspace-write` is disabled unless `pi_allow_write` is set. Even then, use a
+worktree and review every diff. Do not delegate secrets, production actions, or
 untrusted instructions. Use read-only unless a worktree is required, and review
 every diff. Worktree cleanup never discards changes unless `discard_changes` is
 explicitly true. The pane's destructive buttons never call a tool on the first
@@ -626,10 +696,14 @@ hooks module is reported there with its reason.
 - Only Linux `/proc` start-time matching is implemented; other POSIX platforms
   mark live restored jobs interrupted without the identity check.
 - No automatic commits, merges, container creation, or remote workers.
-- These are external DSH processes, not native Claude Tasks or DSH TUI
+- These are external dsh or pi processes, not native Claude Tasks or DSH TUI
   subagents. They do not appear in either harness's native subagent panel.
+- pi resume and steer are disabled in 0.4; a pi job is read-only unless
+  `pi_allow_write` is enabled.
+- pi reports a calculated cost, not a billed cost; the dashboard labels it as an
+  estimate.
 - The dashboard is a monitor, not the DSH TUI or a live attach into a worker
-  process. Use `dsh_events` or the dashboard for visibility.
+  process. Use `worker_events` or the dashboard for visibility.
 
 ## License
 

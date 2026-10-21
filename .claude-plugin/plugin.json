@@ -1,12 +1,12 @@
 {
-  "name": "dsh-workers",
-  "version": "0.3.6",
+  "name": "agent-workers",
+  "version": "0.4.0",
   "description": "Run DeepSeek Harness (dsh) or pi headless workers in parallel, with a live dashboard, a cleanup-aware skill, slash commands, and a native pane.",
   "author": {
     "name": "Cesar-M-Diaz"
   },
-  "homepage": "https://github.com/Cesar-M-Diaz/dsh-workers",
-  "repository": "https://github.com/Cesar-M-Diaz/dsh-workers",
+  "homepage": "https://github.com/Cesar-M-Diaz/agent-workers",
+  "repository": "https://github.com/Cesar-M-Diaz/agent-workers",
   "license": "MIT",
   "keywords": ["dsh", "deepseek", "pi", "workers", "parallel", "mcp", "dashboard"],
   "types": "./types/index.d.ts",
@@ -77,7 +77,7 @@
     "state_dir": {
       "type": "string",
       "title": "State directory",
-      "description": "Where job records and logs are kept. Empty uses $DSH_WORKERS_STATE_DIR, then $XDG_STATE_HOME/dsh-workers, then ~/.local/state/dsh-workers.",
+      "description": "Where job records and logs are kept. Empty uses $AGENT_WORKERS_STATE_DIR (legacy $DSH_WORKERS_STATE_DIR accepted), then an existing ~/.local/state/dsh-workers, then $XDG_STATE_HOME/agent-workers or ~/.local/state/agent-workers.",
       "required": false,
       "default": ""
     },

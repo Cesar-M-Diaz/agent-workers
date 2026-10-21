@@ -37,7 +37,7 @@ export async function resolveAllowedPath(
     const realRoot = await realpath(root);
     if (isWithin(realRoot, real)) return real;
   }
-  throw new Error('cwd is outside DSH_WORKERS_ALLOWED_ROOTS');
+  throw new Error('cwd is outside AGENT_WORKERS_ALLOWED_ROOTS');
 }
 
 export async function resolveAllowedRoots(values: readonly string[]): Promise<string[]> {

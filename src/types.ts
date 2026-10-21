@@ -116,7 +116,7 @@ export interface StartInput {
   base_ref?: string;
   timeout_s?: number;
   resume_job_id?: string;
-  /** Internal: set by dsh_steer, never accepted by the dsh_start tool schema. */
+  /** Internal: set by worker_steer, never accepted by the worker_start tool schema. */
   steered_from?: string;
 }
 

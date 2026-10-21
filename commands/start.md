@@ -1,17 +1,17 @@
 ---
-description: Start a DSH worker in the current session group
+description: Start a worker in the current session group
 argument-hint: <self-contained task>
-allowed-tools: mcp__plugin_dsh-workers_dsh-workers__dsh_group, mcp__plugin_dsh-workers_dsh-workers__dsh_start
+allowed-tools: mcp__plugin_agent-workers_agent-workers__worker_group, mcp__plugin_agent-workers_agent-workers__worker_start
 ---
-Start a DeepSeek Harness worker for this task:
+Start a worker for this task:
 
 $ARGUMENTS
 
-First call `dsh_group` with no arguments. If the returned `group_name` is generic
-or does not describe this work, call `dsh_group` with a concise 3-6 word
+First call `worker_group` with no arguments. If the returned `group_name` is generic
+or does not describe this work, call `worker_group` with a concise 3-6 word
 `group_name`. Reuse the returned `group_id` and `group_name`.
 
-Call `dsh_start` and always pass:
+Call `worker_start` and always pass:
 - `group_id`: the returned group id
 - `group_name`: the returned group name
 - `label`: a short 3-5 word job label

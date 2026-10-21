@@ -78,7 +78,7 @@ describe('committed plugin bundle', () => {
   let rpc: RpcClient;
 
   beforeAll(async () => {
-    root = await mkdtemp(join(tmpdir(), 'dsh-workers-bundle-test-'));
+    root = await mkdtemp(join(tmpdir(), 'agent-workers-bundle-test-'));
     const repo = join(root, 'repo');
     await mkdir(repo);
     const fake = join(root, 'fake-dsh.mjs');
@@ -92,13 +92,13 @@ describe('committed plugin bundle', () => {
       env: {
         PATH: process.env.PATH,
         HOME: process.env.HOME,
-        DSH_WORKERS_DSH_BIN: fake,
-        DSH_WORKERS_ALLOWED_ROOTS: repo,
-        DSH_WORKERS_STATE_DIR: join(root, 'state'),
-        DSH_WORKERS_WORKTREE_ROOT: join(root, 'worktrees'),
-        DSH_WORKERS_DSH_HOME: join(root, 'dsh-home'),
-        DSH_WORKERS_MAX_CONCURRENT: '1',
-        DSH_WORKERS_USE_DSH_CREDENTIALS: '0',
+        AGENT_WORKERS_DSH_BIN: fake,
+        AGENT_WORKERS_ALLOWED_ROOTS: repo,
+        AGENT_WORKERS_STATE_DIR: join(root, 'state'),
+        AGENT_WORKERS_WORKTREE_ROOT: join(root, 'worktrees'),
+        AGENT_WORKERS_DSH_HOME: join(root, 'dsh-home'),
+        AGENT_WORKERS_MAX_CONCURRENT: '1',
+        AGENT_WORKERS_USE_DSH_CREDENTIALS: '0',
       },
       stdio: ['pipe', 'pipe', 'pipe'],
     });
@@ -135,26 +135,26 @@ describe('committed plugin bundle', () => {
 
     const tools = await rpc.request('tools/list', {});
     const names = ((tools.result?.tools ?? []) as Array<{ name: string }>).map((tool) => tool.name);
-    expect(names).toContain('dsh_steer');
-    expect(names).toContain('dsh_delete');
+    expect(names).toContain('worker_steer');
+    expect(names).toContain('worker_delete');
     expect(names.sort()).toEqual([
-      'dsh_cancel',
-      'dsh_cleanup',
-      'dsh_delete',
-      'dsh_events',
-      'dsh_group',
-      'dsh_profile',
-      'dsh_result',
-      'dsh_start',
-      'dsh_status',
-      'dsh_steer',
-      'dsh_wait',
+      'worker_cancel',
+      'worker_cleanup',
+      'worker_delete',
+      'worker_events',
+      'worker_group',
+      'worker_profile',
+      'worker_result',
+      'worker_start',
+      'worker_status',
+      'worker_steer',
+      'worker_wait',
     ]);
   });
 
   it('prints UI help from the bundled entry point', async () => {
     const { stdout } = await run(process.execPath, [uiPath, '--help']);
-    expect(stdout).toContain('dsh-workers-ui');
+    expect(stdout).toContain('agent-workers-ui');
     expect(stdout).toContain('Usage:');
   });
 
@@ -166,7 +166,7 @@ describe('committed plugin bundle', () => {
     const packageJson = JSON.parse(await readFile(join(root, 'package.json'), 'utf8')) as {
       version: string;
     };
-    expect(manifest.name).toBe('dsh-workers');
+    expect(manifest.name).toBe('agent-workers');
     expect(manifest.version).toBe(packageJson.version);
   });
 });

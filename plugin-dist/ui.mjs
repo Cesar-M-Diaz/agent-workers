@@ -266,8 +266,17 @@ async function resolveAllowedRoots(values) {
 }
 
 // src/config.ts
+function readEnv(name) {
+  const suffix = name.startsWith("AGENT_WORKERS_") ? name.slice("AGENT_WORKERS_".length) : name.startsWith("DSH_WORKERS_") ? name.slice("DSH_WORKERS_".length) : void 0;
+  if (suffix !== void 0) {
+    const current = process.env[`AGENT_WORKERS_${suffix}`];
+    if (current !== void 0 && current.trim() !== "") return current;
+    return process.env[`DSH_WORKERS_${suffix}`];
+  }
+  return process.env[name];
+}
 function intEnv(name, fallback, min, max) {
-  const raw = process.env[name];
+  const raw = readEnv(name);
   if (raw === void 0 || raw.trim() === "") return fallback;
   const value = Number(raw);
   if (!Number.isInteger(value) || value < min || value > max) {
@@ -276,7 +285,7 @@ function intEnv(name, fallback, min, max) {
   return value;
 }
 function optionalIntEnv(name, min, max) {
-  const raw = process.env[name];
+  const raw = readEnv(name);
   if (raw === void 0 || raw.trim() === "") return void 0;
   const value = Number(raw);
   if (!Number.isInteger(value) || value < min || value > max) {
@@ -285,7 +294,7 @@ function optionalIntEnv(name, min, max) {
   return value;
 }
 function floatEnv(name, min, max) {
-  const raw = process.env[name];
+  const raw = readEnv(name);
   if (raw === void 0 || raw.trim() === "") return void 0;
   const value = Number(raw);
   if (!Number.isFinite(value) || value < min || value > max) {
@@ -294,7 +303,7 @@ function floatEnv(name, min, max) {
   return value;
 }
 function enumEnv(name, fallback, values) {
-  const raw = process.env[name];
+  const raw = readEnv(name);
   if (raw === void 0 || raw.trim() === "") return fallback;
   const value = raw.trim().toLowerCase();
   if (!values.includes(value)) {
@@ -303,7 +312,7 @@ function enumEnv(name, fallback, values) {
   return value;
 }
 function boolEnv(name, fallback = false) {
-  const raw = process.env[name];
+  const raw = readEnv(name);
   if (raw === void 0 || raw.trim() === "") return fallback;
   return ["1", "true", "yes", "on"].includes(raw.trim().toLowerCase());
 }
@@ -324,7 +333,7 @@ async function ensurePrivateDir(path, fallbackName) {
       const message = err instanceof Error ? err.message : String(err);
       throw new Error(`state directory is not usable: ${dir}: ${message}`);
     }
-    const fallback = join3(tmpdir(), "dsh-workers", fallbackName);
+    const fallback = join3(tmpdir(), "agent-workers", fallbackName);
     await mkdir2(fallback, { recursive: true, mode: 448 });
     await chmod(fallback, 448);
     process.stderr.write(
@@ -339,33 +348,38 @@ async function ensurePrivateDir(path, fallbackName) {
     return fallback;
   }
 }
-function defaultStateDir() {
-  const xdgStateHome = process.env.XDG_STATE_HOME?.trim();
-  if (xdgStateHome) return join3(xdgStateHome, "dsh-workers");
-  return join3(homedir2(), ".local", "state", "dsh-workers");
+async function defaultStateDir() {
+  const base = process.env.XDG_STATE_HOME?.trim() ? process.env.XDG_STATE_HOME.trim() : join3(homedir2(), ".local", "state");
+  const legacy = join3(base, "agent-workers");
+  try {
+    const info = await stat3(legacy);
+    if (info.isDirectory()) return legacy;
+  } catch {
+  }
+  return join3(base, "agent-workers");
 }
 function splitList(raw) {
   if (!raw) return [];
   return raw.split(/[:,]/).map((value) => value.trim()).filter(Boolean);
 }
 function pathEnv(name) {
-  const raw = process.env[name]?.trim();
+  const raw = readEnv(name)?.trim();
   return raw ? raw : void 0;
 }
 async function resolveWorkerStateDir() {
-  return ensurePrivateDir(pathEnv("DSH_WORKERS_STATE_DIR") ?? defaultStateDir(), "state");
+  return ensurePrivateDir(pathEnv("AGENT_WORKERS_STATE_DIR") ?? await defaultStateDir(), "state");
 }
 async function loadConfig() {
   const stateDir = await resolveWorkerStateDir();
   const worktreeRoot = await ensurePrivateDir(
-    pathEnv("DSH_WORKERS_WORKTREE_ROOT") ?? join3(stateDir, "worktrees"),
+    pathEnv("AGENT_WORKERS_WORKTREE_ROOT") ?? join3(stateDir, "worktrees"),
     "worktrees"
   );
   const dshHome = await ensurePrivateDir(
-    pathEnv("DSH_WORKERS_DSH_HOME") ?? join3(stateDir, "dsh-home"),
+    pathEnv("AGENT_WORKERS_DSH_HOME") ?? join3(stateDir, "dsh-home"),
     "dsh-home"
   );
-  const rootValues = splitList(process.env.DSH_WORKERS_ALLOWED_ROOTS);
+  const rootValues = splitList(readEnv("AGENT_WORKERS_ALLOWED_ROOTS"));
   if (rootValues.length === 0) rootValues.push(process.cwd());
   const allowedRoots = await resolveAllowedRoots(rootValues);
   const envAllow = [
@@ -386,43 +400,43 @@ async function loadConfig() {
     "SSL_CERT_FILE",
     "NODE_EXTRA_CA_CERTS",
     "DEEPSEEK_BASE_URL",
-    ...splitList(process.env.DSH_WORKERS_ENV_ALLOW)
+    ...splitList(readEnv("AGENT_WORKERS_ENV_ALLOW"))
   ];
-  const piAgentDir = pathEnv("DSH_WORKERS_PI_AGENT_DIR");
-  const piProfilesFile = process.env.DSH_WORKERS_PI_PROFILES_FILE?.trim();
+  const piAgentDir = pathEnv("AGENT_WORKERS_PI_AGENT_DIR");
+  const piProfilesFile = readEnv("AGENT_WORKERS_PI_PROFILES_FILE")?.trim();
   return {
-    backend: enumEnv("DSH_WORKERS_BACKEND", "dsh", ["dsh", "pi"]),
-    dshBin: process.env.DSH_WORKERS_DSH_BIN ? resolve3(expandHome(process.env.DSH_WORKERS_DSH_BIN)) : "dsh",
-    piBin: process.env.DSH_WORKERS_PI_BIN ? resolve3(expandHome(process.env.DSH_WORKERS_PI_BIN)) : "pi",
-    piDefaultProfile: process.env.DSH_WORKERS_PI_PROFILE?.trim() || "default",
+    backend: enumEnv("AGENT_WORKERS_BACKEND", "dsh", ["dsh", "pi"]),
+    dshBin: readEnv("AGENT_WORKERS_DSH_BIN") ? resolve3(expandHome(readEnv("AGENT_WORKERS_DSH_BIN"))) : "dsh",
+    piBin: readEnv("AGENT_WORKERS_PI_BIN") ? resolve3(expandHome(readEnv("AGENT_WORKERS_PI_BIN"))) : "pi",
+    piDefaultProfile: readEnv("AGENT_WORKERS_PI_PROFILE")?.trim() || "default",
     piProfilesFile: resolve3(expandHome(piProfilesFile || join3(stateDir, "pi-profiles.json"))),
-    piModel: process.env.DSH_WORKERS_PI_MODEL?.trim() || "",
-    piThinking: process.env.DSH_WORKERS_PI_THINKING?.trim() || "",
+    piModel: readEnv("AGENT_WORKERS_PI_MODEL")?.trim() || "",
+    piThinking: readEnv("AGENT_WORKERS_PI_THINKING")?.trim() || "",
     piAgentDir: piAgentDir ? resolve3(expandHome(piAgentDir)) : "",
-    piAllowWrite: boolEnv("DSH_WORKERS_PI_ALLOW_WRITE"),
+    piAllowWrite: boolEnv("AGENT_WORKERS_PI_ALLOW_WRITE"),
     allowedRoots,
     stateDir,
     worktreeRoot,
     dshHome,
-    maxConcurrent: intEnv("DSH_WORKERS_MAX_CONCURRENT", 3, 1, 8),
-    maxQueue: intEnv("DSH_WORKERS_MAX_QUEUE", 16, 0, 64),
-    defaultTimeoutMs: intEnv("DSH_WORKERS_DEFAULT_TIMEOUT_S", 1200, 60, 3600) * 1e3,
-    maxTimeoutMs: intEnv("DSH_WORKERS_MAX_TIMEOUT_S", 3600, 60, 3600) * 1e3,
-    maxDepth: intEnv("DSH_WORKERS_MAX_DEPTH", 2, 0, 8),
-    retentionDays: intEnv("DSH_WORKERS_RETENTION_DAYS", 7, 0, 3650),
-    useDshCredentials: boolEnv("DSH_WORKERS_USE_DSH_CREDENTIALS"),
+    maxConcurrent: intEnv("AGENT_WORKERS_MAX_CONCURRENT", 3, 1, 8),
+    maxQueue: intEnv("AGENT_WORKERS_MAX_QUEUE", 16, 0, 64),
+    defaultTimeoutMs: intEnv("AGENT_WORKERS_DEFAULT_TIMEOUT_S", 1200, 60, 3600) * 1e3,
+    maxTimeoutMs: intEnv("AGENT_WORKERS_MAX_TIMEOUT_S", 3600, 60, 3600) * 1e3,
+    maxDepth: intEnv("AGENT_WORKERS_MAX_DEPTH", 2, 0, 8),
+    retentionDays: intEnv("AGENT_WORKERS_RETENTION_DAYS", 7, 0, 3650),
+    useDshCredentials: boolEnv("AGENT_WORKERS_USE_DSH_CREDENTIALS"),
     credentialsFile: resolve3(
       expandHome(
-        process.env.DSH_WORKERS_CREDENTIALS_FILE ?? join3(homedir2(), ".dsh", ".credentials.yaml")
+        readEnv("AGENT_WORKERS_CREDENTIALS_FILE") ?? join3(homedir2(), ".dsh", ".credentials.yaml")
       )
     ),
     envAllow: [...new Set(envAllow)],
-    stallMs: intEnv("DSH_WORKERS_STALL_S", 120, 30, 3600) * 1e3,
-    loopRepeat: intEnv("DSH_WORKERS_LOOP_REPEAT", 4, 2, 20),
-    toolErrorLimit: intEnv("DSH_WORKERS_TOOL_ERROR_LIMIT", 5, 1, 50),
-    maxSteps: optionalIntEnv("DSH_WORKERS_MAX_STEPS", 1, 1e6),
-    maxCostUsd: floatEnv("DSH_WORKERS_MAX_COST_USD", 0, 1e6),
-    watchdogAction: enumEnv("DSH_WORKERS_WATCHDOG_ACTION", "warn", ["warn", "cancel"])
+    stallMs: intEnv("AGENT_WORKERS_STALL_S", 120, 30, 3600) * 1e3,
+    loopRepeat: intEnv("AGENT_WORKERS_LOOP_REPEAT", 4, 2, 20),
+    toolErrorLimit: intEnv("AGENT_WORKERS_TOOL_ERROR_LIMIT", 5, 1, 50),
+    maxSteps: optionalIntEnv("AGENT_WORKERS_MAX_STEPS", 1, 1e6),
+    maxCostUsd: floatEnv("AGENT_WORKERS_MAX_COST_USD", 0, 1e6),
+    watchdogAction: enumEnv("AGENT_WORKERS_WATCHDOG_ACTION", "warn", ["warn", "cancel"])
   };
 }
 
@@ -602,7 +616,7 @@ async function readEventPage(eventsPath, cursor = 0, limit) {
 }
 
 // src/version.ts
-var VERSION = "0.3.2";
+var VERSION = "0.4.0";
 
 // src/ui.ts
 var HOST = "127.0.0.1";
@@ -617,7 +631,7 @@ function parsePort(raw) {
 }
 function parseArgs(args) {
   const options = {
-    port: parsePort(process.env.DSH_WORKERS_UI_PORT),
+    port: parsePort(process.env.AGENT_WORKERS_UI_PORT ?? process.env.DSH_WORKERS_UI_PORT),
     open: true,
     detach: false,
     serve: false,
@@ -672,13 +686,13 @@ function parseArgs(args) {
   return options;
 }
 function helpText() {
-  return `dsh-workers-ui ${VERSION}
+  return `agent-workers-ui ${VERSION}
 
 Usage:
-  dsh-workers-ui [options]
+  agent-workers-ui [options]
 
 Options:
-  --port <n>   Local HTTP port (default: ${DEFAULT_PORT} or DSH_WORKERS_UI_PORT)
+  --port <n>   Local HTTP port (default: ${DEFAULT_PORT} or AGENT_WORKERS_UI_PORT)
   --job <id>   Open the dashboard focused on one job
   --no-open    Do not open a browser
   --detach     Start a background dashboard and return
@@ -689,8 +703,8 @@ Options:
   --version    Show the version
 
 Environment:
-  DSH_WORKERS_STATE_DIR   Worker state directory
-  DSH_WORKERS_UI_PORT     Default dashboard port
+  AGENT_WORKERS_STATE_DIR   Worker state directory (legacy DSH_WORKERS_STATE_DIR accepted)
+  AGENT_WORKERS_UI_PORT     Default dashboard port (legacy DSH_WORKERS_UI_PORT accepted)
 `;
 }
 function writeJson(res, status, value) {
@@ -749,7 +763,7 @@ async function streamDashboard(req, res, stateDir, retentionDays, url) {
       const jobs = await listDashboardJobs(stateDir);
       sendSse(res, "jobs", {
         server: {
-          name: "dsh-workers-ui",
+          name: "agent-workers-ui",
           version: VERSION,
           state_dir: stateDir,
           retention_days: retentionDays
@@ -828,7 +842,7 @@ function createDashboardServer(stateDir, options = {}) {
         }
         if (url.pathname === "/api/health") {
           writeJson(res, 200, {
-            name: "dsh-workers-ui",
+            name: "agent-workers-ui",
             version: VERSION,
             state_dir: stateDir,
             retention_days: retentionDays,
@@ -839,7 +853,7 @@ function createDashboardServer(stateDir, options = {}) {
         if (url.pathname === "/api/jobs") {
           writeJson(res, 200, {
             server: {
-              name: "dsh-workers-ui",
+              name: "agent-workers-ui",
               version: VERSION,
               state_dir: stateDir,
               retention_days: retentionDays
@@ -911,7 +925,7 @@ async function dashboardHealth(port) {
     });
     if (!response.ok) return void 0;
     const body = await response.json();
-    return body.name === "dsh-workers-ui" ? body : void 0;
+    return body.name === "agent-workers-ui" ? body : void 0;
   } catch {
     return void 0;
   }
@@ -993,7 +1007,7 @@ async function startForeground(options) {
   });
   await listen(server, options.port);
   const url = statusUrl(options.port, options.job);
-  process.stdout.write(`dsh-workers ui ${VERSION}
+  process.stdout.write(`agent-workers ui ${VERSION}
 ${url}
 state: ${stateDir}
 `);
@@ -1065,7 +1079,7 @@ async function main() {
 var entry = process.argv[1];
 if (entry !== void 0 && resolve4(entry) === fileURLToPath(import.meta.url)) {
   void main().catch((err) => {
-    process.stderr.write(`dsh-workers ui: ${err instanceof Error ? err.message : String(err)}
+    process.stderr.write(`agent-workers ui: ${err instanceof Error ? err.message : String(err)}
 `);
     process.exitCode = 1;
   });

@@ -1,5 +1,5 @@
 ---
-description: Open the DSH dashboard focused on one worker
+description: Open the Agent Workers dashboard focused on one worker
 argument-hint: <job_id>
 allowed-tools: Bash(node:*)
 ---
