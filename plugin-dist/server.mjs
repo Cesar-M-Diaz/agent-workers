@@ -38239,6 +38239,7 @@ import { StringDecoder as StringDecoder2 } from "node:string_decoder";
 var MAX_LINE_BYTES2 = 16 * 1024 * 1024;
 var TOOL_WINDOW = 10;
 var RESULT_WINDOW = 10;
+var MAX_TOOL_RESULT_BYTES = 32 * 1024;
 function num(value) {
   return typeof value === "number" && Number.isFinite(value) ? value : void 0;
 }
@@ -38274,6 +38275,33 @@ function textBlocks(content) {
   return content.filter(
     (block) => block !== null && typeof block === "object" && block.type === "text"
   ).map((block) => block.text).filter((text) => typeof text === "string").join("");
+}
+function toolResult(raw) {
+  if (raw === void 0) return void 0;
+  let result;
+  if (raw !== null && typeof raw === "object" && !Array.isArray(raw)) {
+    const content = raw.content;
+    if (Array.isArray(content)) {
+      const blocks = content.filter(
+        (block) => block !== null && typeof block === "object" && block.type === "text" && typeof block.text === "string"
+      );
+      if (blocks.length > 0) result = blocks.map((block) => block.text).join("\n");
+    }
+  }
+  if (result === void 0) {
+    try {
+      result = typeof raw === "string" ? raw : JSON.stringify(raw);
+    } catch {
+      result = "[Unrepresentable tool result]";
+    }
+  }
+  if (result === void 0) return void 0;
+  const bytes = Buffer.from(result, "utf8");
+  if (bytes.length <= MAX_TOOL_RESULT_BYTES) return result;
+  const marker = "\n… [truncated]";
+  let end = MAX_TOOL_RESULT_BYTES - Buffer.byteLength(marker, "utf8");
+  while (((bytes[end] ?? 0) & 192) === 128) end -= 1;
+  return bytes.subarray(0, end).toString("utf8") + marker;
 }
 function mapStopReason(reason) {
   switch (reason) {
@@ -38418,7 +38446,13 @@ var PiFold = class {
         this.state.recentToolResults.push(status);
         if (this.state.recentToolResults.length > RESULT_WINDOW)
           this.state.recentToolResults.shift();
-        this.emit({ type: "tool_result", callId: event.toolCallId, status });
+        const result = toolResult(event.result);
+        this.emit({
+          type: "tool_result",
+          callId: event.toolCallId,
+          status,
+          ...result !== void 0 ? { result } : {}
+        });
         return;
       }
       case "turn_end": {

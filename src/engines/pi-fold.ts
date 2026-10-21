@@ -7,6 +7,7 @@ import type { Fold } from './types.js';
 const MAX_LINE_BYTES = 16 * 1024 * 1024;
 const TOOL_WINDOW = 10;
 const RESULT_WINDOW = 10;
+const MAX_TOOL_RESULT_BYTES = 32 * 1024;
 
 function num(value: unknown): number | undefined {
   return typeof value === 'number' && Number.isFinite(value) ? value : undefined;
@@ -56,6 +57,40 @@ function textBlocks(content: unknown): string {
     .map((block) => (block as { text?: unknown }).text)
     .filter((text): text is string => typeof text === 'string')
     .join('');
+}
+
+/** Preserve useful output without allowing one tool to inflate the persisted log. */
+function toolResult(raw: unknown): string | undefined {
+  if (raw === undefined) return undefined;
+  let result: string | undefined;
+  if (raw !== null && typeof raw === 'object' && !Array.isArray(raw)) {
+    const content = (raw as Record<string, unknown>).content;
+    if (Array.isArray(content)) {
+      const blocks = content.filter(
+        (block): block is { type: 'text'; text: string } =>
+          block !== null &&
+          typeof block === 'object' &&
+          block.type === 'text' &&
+          typeof block.text === 'string',
+      );
+      if (blocks.length > 0) result = blocks.map((block) => block.text).join('\n');
+    }
+  }
+  if (result === undefined) {
+    try {
+      result = typeof raw === 'string' ? raw : JSON.stringify(raw);
+    } catch {
+      result = '[Unrepresentable tool result]';
+    }
+  }
+  if (result === undefined) return undefined;
+  const bytes = Buffer.from(result, 'utf8');
+  if (bytes.length <= MAX_TOOL_RESULT_BYTES) return result;
+  const marker = '\n… [truncated]';
+  let end = MAX_TOOL_RESULT_BYTES - Buffer.byteLength(marker, 'utf8');
+  // A cut before a UTF-8 continuation byte must move back to its leading byte.
+  while (((bytes[end] ?? 0) & 0xc0) === 0x80) end -= 1;
+  return bytes.subarray(0, end).toString('utf8') + marker;
 }
 
 function mapStopReason(reason: unknown): string | undefined {
@@ -217,7 +252,13 @@ export class PiFold implements Fold {
         this.state.recentToolResults.push(status);
         if (this.state.recentToolResults.length > RESULT_WINDOW)
           this.state.recentToolResults.shift();
-        this.emit({ type: 'tool_result', callId: event.toolCallId, status });
+        const result = toolResult(event.result);
+        this.emit({
+          type: 'tool_result',
+          callId: event.toolCallId,
+          status,
+          ...(result !== undefined ? { result } : {}),
+        });
         return;
       }
       case 'turn_end': {
