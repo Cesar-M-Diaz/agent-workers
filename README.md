@@ -288,14 +288,11 @@ by any session show up without an MCP round trip.
   its `cwd`. Both must equal the session cwd or lie inside it. The toggle
   switches to all jobs and groups them under `groupName`.
 
-Every button sits in its own small rounded frame with no inner padding, so the
-focus highlight fills the whole frame; a button waiting for its confirming press
-lights its frame in the warning color.
-
-Claude Code paints panes opaque with its own fill, which usually differs from
-the transcript, where the terminal's background shows. To make the pane match,
-set `pane_background` to your terminal's background color (for example
-`#181818`). A pane cannot show a translucent or image terminal background.
+Claude Code paints panes opaque with its own fill, which can differ from the
+transcript, where the terminal's background shows. The pane keeps that default
+fill; to match your terminal instead, set `pane_background` to its background
+color (for example `#181818`). A pane cannot show a translucent or image
+terminal background.
 
 The pane asks for 58 columns and refreshes once a second from a timer. The
 render hook reads only in-memory `$.state` atoms and never touches the file
