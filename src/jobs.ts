@@ -370,6 +370,20 @@ export class JobManager {
     await mkdir(join(this.config.stateDir, 'jobs'), { recursive: true, mode: 0o700 });
     this.pidStart = await readStartTime(process.pid);
     await this.writeLease();
+    try {
+      await this.recover();
+    } catch (err) {
+      // A server that fails to start must not leave its lease behind.
+      await removeDescriptor(this.config.stateDir, this.ownerId).catch(() => undefined);
+      throw err;
+    }
+    this.leaseReady = true;
+    await this.writeLease();
+    await pruneStaleDescriptors(this.config.stateDir);
+    this.startWatchdog();
+  }
+
+  private async recover(): Promise<void> {
     await pruneExpiredJobs(
       this.config.stateDir,
       this.config.retentionDays,
@@ -408,10 +422,6 @@ export class JobManager {
     }
     this.engineVersion = this.backend === 'dsh' ? initialized[0].version : initialized[1].version;
     await this.loadPreviousJobs();
-    this.leaseReady = true;
-    await this.writeLease();
-    await pruneStaleDescriptors(this.config.stateDir);
-    this.startWatchdog();
   }
 
   private startWatchdog(): void {

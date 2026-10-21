@@ -362,6 +362,14 @@ describe('owner leases and busy guards', () => {
     );
   }
 
+  it('removes its lease when init fails', async () => {
+    const stateDir = newStateDir('failed-init');
+    const config = await configFor(stateDir);
+    const manager = new JobManager({ ...config, dshHome: join(root, 'empty-dsh-home') });
+    await expect(manager.init()).rejects.toMatchObject({ code: 'unknown_profile' });
+    expect(await readDescriptors(stateDir)).toEqual([]);
+  });
+
   it('keeps a live foreign worker running, unlisted, and removes its descriptor', async () => {
     const stateDir = newStateDir('two-managers');
     const first = await startManager(stateDir);

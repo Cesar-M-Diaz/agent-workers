@@ -39016,6 +39016,18 @@ var JobManager = class {
     await mkdir4(join7(this.config.stateDir, "jobs"), { recursive: true, mode: 448 });
     this.pidStart = await readStartTime(process.pid);
     await this.writeLease();
+    try {
+      await this.recover();
+    } catch (err) {
+      await removeDescriptor(this.config.stateDir, this.ownerId).catch(() => void 0);
+      throw err;
+    }
+    this.leaseReady = true;
+    await this.writeLease();
+    await pruneStaleDescriptors(this.config.stateDir);
+    this.startWatchdog();
+  }
+  async recover() {
     await pruneExpiredJobs(
       this.config.stateDir,
       this.config.retentionDays,
@@ -39055,10 +39067,6 @@ var JobManager = class {
     }
     this.engineVersion = this.backend === "dsh" ? initialized[0].version : initialized[1].version;
     await this.loadPreviousJobs();
-    this.leaseReady = true;
-    await this.writeLease();
-    await pruneStaleDescriptors(this.config.stateDir);
-    this.startWatchdog();
   }
   startWatchdog() {
     if (this.watchdogTimer !== void 0) return;
