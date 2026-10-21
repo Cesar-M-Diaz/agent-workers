@@ -4,7 +4,7 @@ Status: frozen for agent-workers 0.5.0. Protocol id: `agent-workers-control/1`.
 
 This document is the contract between the agent-workers MCP server (the only
 process that mutates jobs) and read/control clients such as the dsh-tui panel
-(`integrations/dsh-tui`). Background and rationale:
+(`dsh-tui-agent-workers`, maintained separately in `dsh-tui-plugins`). Background and rationale:
 `docs/research/dsh-tui-workers-integration.md` (§5) and
 `docs/research/dsh-tui-panel-api.md`.
 
@@ -221,4 +221,5 @@ Security:
 - Protocol changes that remove or rename fields bump to
   `agent-workers-control/2`. Adding optional fields keeps `/1`.
 - agent-workers 0.5.0 ships the control plane. The panel is versioned
-  separately (`integrations/dsh-tui`, tags `dsh-tui-v*`).
+  separately as `dsh-tui-plugins/dsh-tui-agent-workers`. The server owns this
+  protocol; the panel keeps a local compatibility snapshot and independent fixtures.

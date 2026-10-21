@@ -53,17 +53,5 @@
         "organizeImports": "on"
       }
     }
-  },
-  "overrides": [
-    {
-      "includes": ["integrations/dsh-tui/src/**/*.spec.ts"],
-      "linter": {
-        "rules": {
-          "suspicious": {
-            "noControlCharactersInRegex": "off"
-          }
-        }
-      }
-    }
-  ]
+  }
 }

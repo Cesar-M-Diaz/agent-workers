@@ -25,7 +25,7 @@ Claude Code plugin "agent-workers"
 
 These workers are separate dsh or pi processes. They are not Claude `Task` calls
 and do not appear in the DSH TUI native subagent side panel. The optional
-[dsh-tui panel](integrations/dsh-tui/README.md) lists them in an "Agent Workers"
+`dsh-tui-agent-workers` panel (in the separate `dsh-tui-plugins` workspace) lists them in an "Agent Workers"
 plugin panel instead.
 
 ## Backends
@@ -261,7 +261,7 @@ dirty worktree requires a second confirmation before its changes are discarded.
 Cancellation remains an MCP operation.
 
 The dashboard is not the DSH TUI side panel. Inside dsh-tui, install the
-[Agent Workers panel](integrations/dsh-tui/README.md) to see the same jobs and
+`dsh-tui-agent-workers` package from `dsh-tui-plugins/dsh-tui-agent-workers` to see the same jobs and
 cancel, clean up or delete them through the control API.
 
 ## Claude Code pane

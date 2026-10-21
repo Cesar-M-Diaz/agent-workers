@@ -1,6 +1,7 @@
 # State dir fixture
 
-Shared by the pane, the dashboard and the dsh-tui panel tests. Contract:
+Canonical server read-model fixture. The extracted `dsh-tui-agent-workers` panel
+keeps an independent snapshot in the separate `dsh-tui-plugins` workspace. Contract:
 `docs/control-protocol.md` §2. Paths inside `job.json` point at `/fixture/state`
 and do not exist; pids are not alive.
 
