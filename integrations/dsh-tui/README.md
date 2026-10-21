@@ -1,13 +1,17 @@
 # dsh-tui-agent-workers
 
-A read-only [dsh-tui](https://www.npmjs.com/package/@deepseek-harness-tui/dsh-tui)
-side panel that lists and details the jobs written by
+A [dsh-tui](https://www.npmjs.com/package/@deepseek-harness-tui/dsh-tui) side
+panel that lists and details the jobs written by
 [agent-workers](../../README.md) to its worker state directory. It reads the
-same files as the Claude Code worker pane and never starts an MCP server.
+filesystem read model and talks to each live MCP owner's loopback control API
+(`docs/control-protocol.md`) for cancel, cleanup and delete. It never starts an
+MCP server and never writes the state dir.
 
 ## What it shows
 
-- A header with running / queued / done counts and the total of known costs.
+- A header with running / queued / done counts, the total of known costs and
+  the control status: `control: N owners` or, with no live owner,
+  `control offline — read-only`.
 - One row per job: status glyph and label, then `model · steps · cost · elapsed`,
   plus the first alert when there is one.
 - Groups by `groupId`; groups with active jobs come first. Jobs without a group
@@ -15,10 +19,9 @@ same files as the Claude Code worker pane and never starts an MCP server.
 - A selected-job detail view (press `Enter`) with status/reason, backend,
   profile, model, access/isolation, cwd, worktree/branch, owner, session,
   lineage (`resumeOf` / `steeredFrom`), timestamps and elapsed, usage and cost,
-  alerts, the last 8 tool calls, the last text/error and a preview of
-  `final.md` (plus `stderrTail` for terminal failures).
-- A `read-only` banner: this version has no cancel, steer, cleanup or delete
-  actions.
+  alerts, the last 8 tool calls, the last text/error, a preview of `final.md`
+  (plus `stderrTail` for terminal failures), and the actions the owner offers.
+- A footer with the armed confirmation or the last action result.
 
 ## Keys (while the panel is focused)
 
@@ -29,10 +32,57 @@ same files as the Claude Code worker pane and never starts an MCP server.
 | `Enter` | Toggle the detail view |
 | `r` | Refresh now |
 | `a` | Toggle all groups / current project |
+| `c` | Cancel the selected job |
+| `x` | Clean up the selected terminal job's worktree |
+| `d` | Delete the selected terminal job |
 
 `selectedId` and `showAll` are persisted through `host.storage`. The panel
 badges new failed jobs with `host.notify('error', n)` and clears the badge when
 it receives focus.
+
+## Actions and confirmations
+
+Actions are routed to the owner whose `owner_id` equals the selected job's
+`ownerId` in the read model. The panel mirrors the server's `capabilities`:
+keys whose capability is `false`, and all action keys while there is no live
+owner, are disabled and the footer explains why (`cancel unavailable: control
+offline`, `cleanup unavailable: not available for this job`, …).
+
+- `c`, `x` and `d` need **two presses within 5 s**: the first arms
+  `confirm <action>?` in the footer, the second calls the owner. Any other key
+  or the five-second timeout disarms.
+- `cleanup`/`delete` can report a dirty worktree. A cleanup returns
+  `worktree: preserved_dirty`; a delete returns HTTP 409 `worktree_dirty`. In
+  both cases the footer offers `discard & <action>?`. That second confirmation
+  also needs two presses: the first arms `confirm discard?`, the second calls
+  the same route with `discard_changes: true` (POST body for cleanup,
+  `?discard_changes=1` for DELETE).
+- One action is in flight per job; further presses are ignored until it
+  finishes. Errors are sanitized and shown for that job in the detail view
+  (`action error …`) and as the footer result.
+- After a successful action the panel refreshes the state dir and re-discovers
+  owners immediately.
+- **Steer is out of scope.** The detail view shows `steer unavailable`; there
+  is no key for it.
+
+## Discovery and read-only fallback
+
+Every five seconds the store reads `<state>/control/*.json` and validates each
+descriptor exactly like contract §6:
+
+- file name `^[A-Za-z0-9_-]+\.json$`, a regular file (symlinks are ignored);
+- no group/other permission bits (`mode & 0o077 === 0`);
+- `owner_id` equals the file name, `protocol` is
+  `agent-workers-control/1`, `ready` is `true` and `control` is non-null;
+- the pid is alive (`process.kill(pid, 0)`; `EPERM` counts as alive).
+
+Each live owner gets an 800 ms health probe (`GET /v1/health`, Bearer token)
+and, when healthy, `GET /v1/jobs`. Failures back off per owner for 1/2/5/10 s.
+The panel then keeps a `jobId → { ownerId, capabilities }` map.
+
+With no live or healthy owner the header shows
+`control offline — read-only`; the job list and detail view keep working from
+the filesystem. No network call is made for a job whose owner is not live.
 
 ## Install (local `link:`)
 
@@ -98,26 +148,30 @@ Without `stateDir`, the directory is resolved exactly as in
 Blank environment values count as unset. `stateDir` is the recommended way to
 keep the panel and the Claude Code plugin pointed at the same directory.
 
-## Read-only limitations
+## Security and limitations
 
-- No actions: no cancel, steer, cleanup, delete, attach or dashboard launch.
-- The panel only reads `jobs/<id>/job.json`, `events.ndjson` and, for the
-  selected terminal job, `final.md`. It never writes the state dir, never
-  starts an agent-workers MCP server and makes no network calls.
+- Network access is limited to `127.0.0.1` control servers discovered from the
+  state dir. Every request sends `Authorization: Bearer <token>` from the
+  descriptor; the token is never rendered, logged or included in errors.
+- The panel never writes the state dir, never kills processes and never starts
+  an MCP server. Mutations only happen through the owning server's HTTP API.
 - Worker output is untrusted data: ANSI/OSC escapes and C0/C1 control
   characters are stripped, whitespace collapsed and every line truncated to
   the available width before rendering.
 - Events are read only for active jobs and the selected job (last 3.5 MB);
   `final.md` only for the selected terminal job (at most 1 MB). Reads are
   cached by `mtimeMs + size`.
-- Polling is 1 s while the panel is visible or a job is active, 4 s when idle.
-  No filesystem access happens during render.
+- Filesystem polling is 1 s while the panel is visible or a job is active, 4 s
+  when idle. Descriptor discovery is every 5 s. No filesystem or network access
+  happens during render.
 
 ## Compatibility
 
 - **dsh-tui 0.16.x**, `ctx.tuiPanels` API v1 (`TUI_PANEL_API_VERSION = 1`).
   The panels seam is experimental; a future dsh-tui minor may change it.
-- **agent-workers >= 0.4** (state dir layout and `job.json` fields used here).
+- **agent-workers >= 0.5** with the control protocol
+  `agent-workers-control/1` (the filesystem read model still works read-only
+  with older state dirs).
 - Node.js >= 24, as required by the dsh-tui profile.
 
 ## Development
@@ -131,5 +185,8 @@ pnpm build
 
 Tests cover sanitization, state-dir resolution, the shared
 `test/fixtures/state` README cases, torn `job.json` recovery, selected-only
-`events.ndjson` / `final.md` reads, and view-model width limits at 28, 40 and
-64 columns.
+`events.ndjson` / `final.md` reads, descriptor validation (permissions,
+symlinks, name/protocol/ready/control/pid), the control client against a fake
+loopback HTTP server (auth, errors, timeout/backoff), the confirmation state
+machine, owner routing and the view-model width limits at 28, 40 and 64
+columns.

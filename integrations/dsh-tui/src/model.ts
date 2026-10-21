@@ -1,3 +1,5 @@
+import { type ActionKind, describePending, type PendingAction } from './actions.js';
+import type { JobCapabilities } from './control-client.js';
 import { displayWidth, fitText, sanitizeText } from './sanitize.js';
 import {
   isActiveStatus,
@@ -6,6 +8,24 @@ import {
   type WorkerJob,
 } from './state-reader.js';
 
+export type ControlState = 'offline' | { readonly owners: number };
+
+export interface JobControlView {
+  readonly ownerId: string;
+  readonly capabilities: JobCapabilities;
+}
+
+/** Control information gathered by the store, kept separate from the read model. */
+export interface ModelControl {
+  readonly state: ControlState;
+  readonly jobs?: ReadonlyMap<string, JobControlView>;
+  readonly pending?: PendingAction | null;
+  readonly needsDiscard?: ReadonlyMap<string, ActionKind>;
+  readonly busy?: ReadonlySet<string>;
+  readonly message?: string | null;
+  readonly errors?: ReadonlyMap<string, string>;
+}
+
 export interface ModelOptions {
   width: number;
   selectedId?: string;
@@ -13,6 +33,7 @@ export interface ModelOptions {
   cwd?: string;
   now?: number;
   error?: string | null;
+  control?: ModelControl;
 }
 
 export interface JobRow {
@@ -43,11 +64,19 @@ export interface WorkersModel {
   width: number;
   header: string[];
   banner: string;
+  footer: string;
+  control?: string;
   groups: JobGroup[];
   rows: JobRow[];
   detail?: JobDetail;
   error?: string;
   empty: boolean;
+}
+
+export function controlStatusLine(control: ModelControl | undefined): string | undefined {
+  if (control === undefined) return undefined;
+  if (control.state === 'offline') return 'control offline — read-only';
+  return `control: ${control.state.owners} owner${control.state.owners === 1 ? '' : 's'}`;
 }
 
 const STATUS: Record<string, { glyph: string; label: string }> = {
@@ -165,7 +194,11 @@ function rowLines(job: WorkerJob, width: number, now: number, selected: boolean)
   return lines;
 }
 
-function detailLines(job: WorkerJob, width: number, now: number): string[] {
+function mark(capabilities: JobCapabilities | undefined, action: ActionKind): string {
+  return capabilities?.[action] === true ? '✓' : '✗';
+}
+
+function detailLines(job: WorkerJob, width: number, now: number, control?: ModelControl): string[] {
   const lines: string[] = [];
   const add = (text: string): void => pushLine(lines, width, text);
 
@@ -174,6 +207,16 @@ function detailLines(job: WorkerJob, width: number, now: number): string[] {
   add(`status ${statusLabel(job)}${job.reason !== undefined ? ` · ${job.reason}` : ''}`);
   if (job.jobJsonInvalid === true) add('warning job.json torn; showing last valid copy');
   if (job.ownerId !== undefined) add(`owner ${job.ownerId}`);
+  if (control !== undefined) {
+    const capabilities = control.jobs?.get(job.id)?.capabilities;
+    add(`cancel ${mark(capabilities, 'cancel')} · steer unavailable`);
+    add(`cleanup ${mark(capabilities, 'cleanup')} · delete ${mark(capabilities, 'delete')}`);
+    const discard = control.needsDiscard?.get(job.id);
+    if (discard !== undefined) add(`discard & ${discard}?`);
+    if (control.busy?.has(job.id) === true) add('action running');
+    const actionError = control.errors?.get(job.id);
+    if (actionError !== undefined && actionError !== '') add(`action error ${actionError}`);
+  }
   add(`backend ${job.backend} · profile ${job.profile ?? 'n/a'}`);
   add(`model ${job.provider !== undefined ? `${job.provider} / ` : ''}${job.model ?? 'n/a'}`);
   add(`access ${job.access ?? 'n/a'} · isolation ${job.isolation ?? 'n/a'}`);
@@ -279,12 +322,29 @@ function detailLines(job: WorkerJob, width: number, now: number): string[] {
   return lines;
 }
 
+function footerLine(
+  control: ModelControl | undefined,
+  selected: WorkerJob | undefined,
+  width: number,
+): string {
+  if (control?.pending !== undefined && control.pending !== null) {
+    return fitText(describePending(control.pending), width);
+  }
+  const discard = selected !== undefined ? control?.needsDiscard?.get(selected.id) : undefined;
+  if (discard !== undefined) return fitText(`discard & ${discard}?`, width);
+  if (control?.message !== undefined && control.message !== null && control.message !== '') {
+    return fitText(control.message, width);
+  }
+  return fitText('↑↓ enter r a · c x d', width);
+}
+
 /** Build the complete, width-bounded, sanitized view model. */
 export function buildModel(jobs: readonly WorkerJob[], options: ModelOptions): WorkersModel {
   const width = Math.max(1, Math.floor(options.width));
   const now = options.now ?? Date.now();
   const showAll = options.showAll === true;
   const cwd = options.cwd?.trim();
+  const control = options.control;
 
   let scoped = false;
   let visible: WorkerJob[] = [...jobs];
@@ -314,6 +374,8 @@ export function buildModel(jobs: readonly WorkerJob[], options: ModelOptions): W
     fitText(`${running} run · ${queued} queued · ${done} done`, width),
     fitText(`cost ${totalCost} · ${visible.length} jobs`, width),
   ];
+  const statusLine = controlStatusLine(control);
+  if (statusLine !== undefined) header.push(fitText(statusLine, width));
 
   const groupsMap = new Map<string, WorkerJob[]>();
   for (const job of visible) {
@@ -367,17 +429,20 @@ export function buildModel(jobs: readonly WorkerJob[], options: ModelOptions): W
   const selected = visible.find((job) => job.id === selectedId);
   const detail =
     selected !== undefined
-      ? { id: selected.id, lines: detailLines(selected, width, now) }
+      ? { id: selected.id, lines: detailLines(selected, width, now, control) }
       : undefined;
 
+  const scope = showAll || !scoped ? 'all groups' : 'current project';
   const model: WorkersModel = {
     width,
     header,
-    banner: fitText(`read-only · ${showAll || !scoped ? 'all groups' : 'current project'}`, width),
+    banner: fitText(control === undefined ? `read-only · ${scope}` : scope, width),
+    footer: footerLine(control, selected, width),
     groups,
     rows,
     empty: rows.length === 0,
   };
+  if (statusLine !== undefined) model.control = fitText(statusLine, width);
   if (detail !== undefined) model.detail = detail;
   if (options.error !== undefined && options.error !== null && options.error !== '') {
     model.error = fitText(`error ${options.error}`, width);

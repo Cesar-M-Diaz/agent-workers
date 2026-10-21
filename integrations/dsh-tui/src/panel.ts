@@ -128,42 +128,79 @@ export function createWorkerPanel(store: WorkersStore): (props: PanelProps) => u
       showAll: snapshot.showAll,
       cwd: cwdOf(host),
       error: snapshot.error,
+      control: {
+        state: snapshot.control,
+        jobs: snapshot.jobControls,
+        pending: snapshot.pending,
+        needsDiscard: snapshot.needsDiscard,
+        busy: snapshot.busy,
+        message: snapshot.notice?.text ?? null,
+        errors: snapshot.actionErrors,
+      },
     });
     view.current = model;
 
     React.useEffect(() => {
       const dispose = host.onKey((event: DshKeyEvent) => {
+        if (!focused) return;
         const key = event.key;
         const input = event.input;
         const rows = view.current?.rows ?? [];
 
         if (key.upArrow === true || input === 'k') {
+          store.disarmAction();
           moveSelection(store, rows, -1);
           event.preventDefault();
           return;
         }
         if (key.downArrow === true || input === 'j') {
+          store.disarmAction();
           moveSelection(store, rows, 1);
           event.preventDefault();
           return;
         }
         if (key.return_ === true || input === '\r' || input === '\n') {
+          store.disarmAction();
           setExpanded((value) => !value);
           event.preventDefault();
           return;
         }
+        if (key.escape === true) {
+          store.disarmAction();
+          event.preventDefault();
+          return;
+        }
         if (input === 'r') {
+          store.disarmAction();
           void store.refresh();
           event.preventDefault();
           return;
         }
         if (input === 'a') {
+          store.disarmAction();
           store.setShowAll(!store.getSnapshot().showAll);
           event.preventDefault();
+          return;
         }
+        const action =
+          input === 'c'
+            ? 'cancel'
+            : input === 'x'
+              ? 'cleanup'
+              : input === 'd'
+                ? 'delete'
+                : undefined;
+        if (action !== undefined) {
+          const selectedId = store.getSnapshot().selectedId;
+          if (selectedId === undefined) store.disarmAction();
+          else void store.pressAction(selectedId, action);
+          event.preventDefault();
+          return;
+        }
+        store.disarmAction();
       });
       return dispose;
-    }, [host, store]);
+    }, [host, store, focused]);
 
     const headerLines = [...model.header, model.banner];
     if (model.error !== undefined) headerLines.push(model.error);
@@ -186,7 +223,7 @@ export function createWorkerPanel(store: WorkersStore): (props: PanelProps) => u
       body.push(...model.detail.lines);
     }
 
-    const footer = fitText('↑↓ select · enter detail · r refresh · a scope', width);
+    const footer = model.footer;
     const bodyHeight = Math.max(1, Math.floor(height) - headerLines.length - 1);
 
     return React.createElement(
