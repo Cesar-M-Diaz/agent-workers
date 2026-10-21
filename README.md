@@ -114,6 +114,7 @@ provides the same server, and enabling both duplicates every tool.
 | `use_dsh_credentials` | `DSH_WORKERS_USE_DSH_CREDENTIALS` | `false` | Read provider keys from `~/.dsh/.credentials.yaml` when they are not in the worker environment. |
 | `max_concurrent` | `DSH_WORKERS_MAX_CONCURRENT` | `3` | Hard maximum 8. |
 | `profile` | `DSH_WORKERS_PROFILE` | `work-openrouter`, falling back to `headless` | Starting DSH profile. Empty uses the server default. |
+| `pane_background` | — (pane only) | empty → Claude Code's pane fill | `#rrggbb` background for the pane, e.g. your terminal's, so it matches the chat. |
 
 The substitution uses the documented `${user_config.KEY}` form inside the MCP
 server's `env`. Empty values are safe: the server treats them as unset and uses
@@ -287,10 +288,14 @@ by any session show up without an MCP round trip.
   its `cwd`. Both must equal the session cwd or lie inside it. The toggle
   switches to all jobs and groups them under `groupName`.
 
-The pane draws on a solid black background, and every button sits in its own
-small rounded frame; a button waiting for its confirming press lights its frame
-in the warning color. Claude Code paints panes opaque, so a pane cannot show a
-translucent or image terminal background the way the transcript does.
+Every button sits in its own small rounded frame with no inner padding, so the
+focus highlight fills the whole frame; a button waiting for its confirming press
+lights its frame in the warning color.
+
+Claude Code paints panes opaque with its own fill, which usually differs from
+the transcript, where the terminal's background shows. To make the pane match,
+set `pane_background` to your terminal's background color (for example
+`#181818`). A pane cannot show a translucent or image terminal background.
 
 The pane asks for 58 columns and refreshes once a second from a timer. The
 render hook reads only in-memory `$.state` atoms and never touches the file

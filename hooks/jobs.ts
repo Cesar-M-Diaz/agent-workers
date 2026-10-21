@@ -988,6 +988,16 @@ export function resolveStateDir(sources: StateDirSources): string {
   return '.local/state/dsh-workers'
 }
 
+/**
+ * The pane background from the `pane_background` option: a `#rrggbb` hex
+ * color, or undefined (blank or anything else) to keep Claude Code's own fill.
+ */
+export function paneBackground(value: unknown): string | undefined {
+  if (typeof value !== 'string') return undefined
+  const color = value.trim()
+  return /^#[0-9a-f]{6}$/i.test(color) ? color.toLowerCase() : undefined
+}
+
 /** The rows of a job that are worth re-reading only when their mtime moves. */
 export type JobCacheEntry = {
   jobSeenMtimeMs?: number

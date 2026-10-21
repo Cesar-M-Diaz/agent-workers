@@ -49,6 +49,7 @@ import {
   lastNonEmptyLines,
   newestJob,
   parseJobJson,
+  paneBackground,
   resolveStateDir,
   sanitizeLine,
   SAYS_LINES,
@@ -69,9 +70,6 @@ import {
 const PANE_ID = 'dsh-workers'
 const REFRESH_MS = 1000
 const PANE_COLUMNS = 58
-// Claude Code paints panes opaque; a solid black reads closest to the
-// transcript on a dark, translucent terminal.
-const PANE_BACKGROUND = 'black'
 
 const EMPTY_VIEW: DshPaneView = {
   isLoaded: false,
@@ -690,8 +688,9 @@ export const register: Register = (on, options) => {
       ? groupJobs(rows).map(group => ({ name: group.name, jobs: group.jobs }))
       : [{ name: null, jobs: rows }]
 
-    // Every button sits in its own small rounded frame; an armed (confirm)
-    // button lights its frame in the warning color.
+    // Every button sits in its own small rounded frame with no inner padding,
+    // so the focus highlight fills the whole frame; an armed (confirm) button
+    // lights its frame in the warning color.
     const framed = (
       key: string,
       button: RenderElement,
@@ -702,7 +701,6 @@ export const register: Register = (on, options) => {
         borderStyle="round"
         borderColor={isArmed ? 'warning' : 'subtle'}
         borderDimColor={!isArmed}
-        paddingX={1}
       >
         {button}
       </Box>
@@ -1489,7 +1487,7 @@ export const register: Register = (on, options) => {
     return (
       <Box
         flexDirection="column"
-        backgroundColor={PANE_BACKGROUND}
+        backgroundColor={paneBackground(options.pane_background)}
         minHeight={e.props.scroll?.bodyRows}
       >
         <Box

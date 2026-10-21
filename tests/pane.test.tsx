@@ -24,6 +24,7 @@ import {
   normalizeJob,
   parseEventLines,
   parseJobJson,
+  paneBackground,
   resolveStateDir,
   sortJobs,
   statusDisplay,
@@ -442,6 +443,15 @@ describe('jobs.ts', () => {
     ).toBe(false)
   })
 
+
+  test('accepts only a #rrggbb pane background', () => {
+    expect(paneBackground('#181818')).toBe('#181818')
+    expect(paneBackground(' #1A1B1C ')).toBe('#1a1b1c')
+    expect(paneBackground('')).toBeUndefined()
+    expect(paneBackground('black')).toBeUndefined()
+    expect(paneBackground('#fff')).toBeUndefined()
+    expect(paneBackground(undefined)).toBeUndefined()
+  })
 
   test('resolves the state dir with the documented precedence', () => {
     expect(
