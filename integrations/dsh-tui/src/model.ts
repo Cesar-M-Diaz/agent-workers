@@ -209,7 +209,7 @@ function detailLines(job: WorkerJob, width: number, now: number, control?: Model
   if (job.ownerId !== undefined) add(`owner ${job.ownerId}`);
   if (control !== undefined) {
     const capabilities = control.jobs?.get(job.id)?.capabilities;
-    add(`cancel ${mark(capabilities, 'cancel')} · steer unavailable`);
+    add(`cancel ${mark(capabilities, 'cancel')} · steer ${mark(capabilities, 'steer')}`);
     add(`cleanup ${mark(capabilities, 'cleanup')} · delete ${mark(capabilities, 'delete')}`);
     const discard = control.needsDiscard?.get(job.id);
     if (discard !== undefined) add(`discard & ${discard}?`);
@@ -335,7 +335,7 @@ function footerLine(
   if (control?.message !== undefined && control.message !== null && control.message !== '') {
     return fitText(control.message, width);
   }
-  return fitText('↑↓ enter r a · c x d', width);
+  return fitText('↑↓ enter r a · c s x d', width);
 }
 
 /** Build the complete, width-bounded, sanitized view model. */

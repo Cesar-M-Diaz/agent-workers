@@ -7,7 +7,7 @@
  * reports a dirty worktree.
  */
 
-export type ActionKind = 'cancel' | 'cleanup' | 'delete';
+export type ActionKind = 'cancel' | 'cleanup' | 'delete' | 'steer';
 export type ConfirmStage = 'confirm' | 'discard';
 
 export const CONFIRM_TIMEOUT_MS = 5000;
@@ -38,6 +38,8 @@ export function actionKey(action: ActionKind): string {
       return 'x';
     case 'delete':
       return 'd';
+    case 'steer':
+      return 's';
   }
 }
 

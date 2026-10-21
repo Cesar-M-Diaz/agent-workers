@@ -1,10 +1,23 @@
 import type { DshHost, DshKeyEvent, DshStorage, PanelProps } from './dsh-types.js';
 import { buildModel, type WorkersModel } from './model.js';
-import { fitText } from './sanitize.js';
+import { displayWidth, fitText } from './sanitize.js';
 import type { StoreSnapshot, WorkersStore } from './store.js';
 
 const SELECTED_KEY = 'selectedId';
 const SHOW_ALL_KEY = 'showAll';
+
+/** `ctx.tuiDialogs.input` resolves at most 500 cells; longer text is refused. */
+export const DIALOG_INPUT_LIMIT = 500;
+
+/**
+ * Host-side hooks the panel needs to open the steer editor. They are closures
+ * because `tuiScenes`/`tuiDialogs` may mount after the panel is registered.
+ */
+export interface SteerUi {
+  openScene(): boolean;
+  inputAvailable(): boolean;
+  prompt(jobId: string, label: string): Promise<string | undefined>;
+}
 
 function storageOf(host: DshHost): DshStorage | undefined {
   try {
@@ -38,7 +51,10 @@ function moveSelection(store: WorkersStore, rows: readonly { id: string }[], del
   if (id !== undefined) store.setSelected(id);
 }
 
-export function createWorkerPanel(store: WorkersStore): (props: PanelProps) => unknown {
+export function createWorkerPanel(
+  store: WorkersStore,
+  steerUi?: SteerUi,
+): (props: PanelProps) => unknown {
   return function AgentWorkersPanel(props: PanelProps): unknown {
     const { React, ui, host, width, height, focused, visible } = props;
     const [snapshot, setSnapshot] = React.useState<StoreSnapshot>(() => store.getSnapshot());
@@ -140,6 +156,30 @@ export function createWorkerPanel(store: WorkersStore): (props: PanelProps) => u
     });
     view.current = model;
 
+    const fallbackSteer = async (jobId: string, label: string): Promise<void> => {
+      if (steerUi === undefined) return;
+      try {
+        const message = await steerUi.prompt(jobId, label);
+        if (message === undefined) return;
+        if (message.length === 0) {
+          store.reportSteerUnavailable(jobId, 'message is empty');
+          return;
+        }
+        const cells = displayWidth(message);
+        if (cells > DIALOG_INPUT_LIMIT) {
+          store.reportSteerUnavailable(
+            jobId,
+            `input dialog is limited to ${DIALOG_INPUT_LIMIT} cells (got ${cells}); use the full-screen editor`,
+          );
+          return;
+        }
+        await store.requestSteer(jobId, message);
+      } catch (cause) {
+        const detail = cause instanceof Error ? cause.message : String(cause);
+        store.reportSteerUnavailable(jobId, detail);
+      }
+    };
+
     React.useEffect(() => {
       const dispose = host.onKey((event: DshKeyEvent) => {
         if (!focused) return;
@@ -182,6 +222,36 @@ export function createWorkerPanel(store: WorkersStore): (props: PanelProps) => u
           event.preventDefault();
           return;
         }
+        if (input === 's') {
+          store.disarmAction();
+          event.preventDefault();
+          const current = store.getSnapshot();
+          const selectedId = current.selectedId;
+          if (selectedId === undefined) {
+            store.reportSteerUnavailable('', 'no job selected');
+            return;
+          }
+          const job = current.jobs.find((candidate) => candidate.id === selectedId);
+          if (!store.prepareSteer(selectedId)) return;
+
+          let opened = false;
+          try {
+            opened = steerUi?.openScene() === true;
+          } catch {
+            opened = false;
+          }
+          if (opened) return;
+          store.clearSteerTarget();
+          if (steerUi?.inputAvailable() === true) {
+            void fallbackSteer(selectedId, job?.label ?? selectedId);
+            return;
+          }
+          store.reportSteerUnavailable(
+            selectedId,
+            'no full-screen scene or input dialog available',
+          );
+          return;
+        }
         const action =
           input === 'c'
             ? 'cancel'
@@ -200,7 +270,7 @@ export function createWorkerPanel(store: WorkersStore): (props: PanelProps) => u
         store.disarmAction();
       });
       return dispose;
-    }, [host, store, focused]);
+    }, [host, store, focused, steerUi]);
 
     const headerLines = [...model.header, model.banner];
     if (model.error !== undefined) headerLines.push(model.error);

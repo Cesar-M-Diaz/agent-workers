@@ -4,8 +4,8 @@ A [dsh-tui](https://www.npmjs.com/package/@deepseek-harness-tui/dsh-tui) side
 panel that lists and details the jobs written by
 [agent-workers](../../README.md) to its worker state directory. It reads the
 filesystem read model and talks to each live MCP owner's loopback control API
-(`docs/control-protocol.md`) for cancel, cleanup and delete. It never starts an
-MCP server and never writes the state dir.
+(`docs/control-protocol.md`) for cancel, steer, cleanup and delete. It never
+starts an MCP server and never writes the state dir.
 
 ## What it shows
 
@@ -33,6 +33,7 @@ MCP server and never writes the state dir.
 | `r` | Refresh now |
 | `a` | Toggle all groups / current project |
 | `c` | Cancel the selected job |
+| `s` | Steer the selected job (full-screen editor) |
 | `x` | Clean up the selected terminal job's worktree |
 | `d` | Delete the selected terminal job |
 
@@ -62,8 +63,55 @@ offline`, `cleanup unavailable: not available for this job`, …).
   (`action error …`) and as the footer result.
 - After a successful action the panel refreshes the state dir and re-discovers
   owners immediately.
-- **Steer is out of scope.** The detail view shows `steer unavailable`; there
-  is no key for it.
+
+## Steer
+
+`s` opens the full-screen **Steer worker** scene for the selected job. It is
+offered only when the server reports `capabilities.steer: true` and the job's
+owner is live; otherwise the footer explains why (`steer unavailable: control
+offline`, `steer unavailable: not available for this job`, …). The target job
+id is handed to the scene through the store, because the scene is registered
+once at activation.
+
+**Steer is cancel + resume, not a live interruption.** For an active job the
+server cancels the original first. If the resume then fails, the original stays
+cancelled; this is why the scene shows the warning before submitting:
+
+```text
+warning: steer cancels this running job first;
+if resuming fails it stays cancelled
+```
+
+Inside the scene:
+
+| Key | Action |
+| --- | --- |
+| Printable text | Insert at the cursor (paste supported) |
+| `Enter` | New line |
+| `Backspace` / `Delete` | Delete before / after the cursor |
+| `←` `→` `↑` `↓`, `Home`, `End` | Move the cursor |
+| `Ctrl+S` | Submit; a second `Ctrl+S` within 5 s confirms |
+| `Esc` | Close without sending (also clears any armed confirmation) |
+
+The editor is a multiline buffer with a hard **20 000 character** limit,
+matching the control API (`message: 1..20000`). Input beyond the limit is
+refused, never truncated. The status line always shows `n/20000`, the
+confirmation hint, `sending…`, or the sanitized error code/message. While the
+request is in flight all input is ignored. On success the scene shows the new
+`steered_job_id` and returns to the panel; on error the text is kept so the user
+can fix it and retry, or press `Esc`. The panel refreshes after a 2xx like the
+other actions, and a failure adds `action error <code>: <message>` to the job's
+detail.
+
+### Fallback when scenes are unavailable
+
+The scene needs `ctx.tuiScenes`. If that seam is missing at activation time,
+`s` falls back to `ctx.tuiDialogs.input` (plus a confirmation dialog with the
+same cancel-first warning). The input dialog is limited to **500 cells**; the
+fallback warns about that limit and refuses longer text instead of silently
+truncating it. If neither `tuiScenes` nor `tuiDialogs` is available, steer is
+disabled and the footer says so. The panel never falls back to a truncated
+steer message.
 
 ## Discovery and read-only fallback
 
@@ -167,8 +215,9 @@ keep the panel and the Claude Code plugin pointed at the same directory.
 
 ## Compatibility
 
-- **dsh-tui 0.16.x**, `ctx.tuiPanels` API v1 (`TUI_PANEL_API_VERSION = 1`).
-  The panels seam is experimental; a future dsh-tui minor may change it.
+- **dsh-tui 0.16.x**, `ctx.tuiPanels` API v1 (`TUI_PANEL_API_VERSION = 1`) and
+  `ctx.tuiScenes`/`ctx.tuiDialogs` for steer. The panels and scenes seams are
+  experimental; a future dsh-tui minor may change them.
 - **agent-workers >= 0.5** with the control protocol
   `agent-workers-control/1` (the filesystem read model still works read-only
   with older state dirs).
@@ -188,5 +237,7 @@ Tests cover sanitization, state-dir resolution, the shared
 `events.ndjson` / `final.md` reads, descriptor validation (permissions,
 symlinks, name/protocol/ready/control/pid), the control client against a fake
 loopback HTTP server (auth, errors, timeout/backoff), the confirmation state
-machine, owner routing and the view-model width limits at 28, 40 and 64
-columns.
+machine, the steer editor (insert/newline/cursor/20 000 limit/window clipping),
+the steer scene confirmation and warning lines, owner routing, `requestSteer`
+against a fake control server (200, 409 `resume_unavailable`, no-owner local
+rejection), and the view-model width limits at 28, 40 and 64 columns.

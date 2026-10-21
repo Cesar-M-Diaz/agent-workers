@@ -31,8 +31,19 @@ export interface DshUi {
 export interface DshKeyFlags {
   readonly upArrow?: boolean;
   readonly downArrow?: boolean;
+  readonly leftArrow?: boolean;
+  readonly rightArrow?: boolean;
+  readonly home?: boolean;
+  readonly end?: boolean;
   readonly return_?: boolean;
   readonly escape?: boolean;
+  readonly backspace?: boolean;
+  readonly delete?: boolean;
+  readonly ctrl?: boolean;
+  readonly meta?: boolean;
+  readonly super?: boolean;
+  readonly shift?: boolean;
+  readonly isPasted?: boolean;
 }
 
 export interface DshKeyEvent {
@@ -61,6 +72,8 @@ export interface DshHost {
   readonly storage: DshStorage | undefined;
   onKey(listener: (event: DshKeyEvent) => void): () => void;
   focus(): boolean;
+  /** Open a full-screen scene registered by this plugin; false when absent. */
+  openScene?(id: string): boolean;
 }
 
 export interface PanelProps {
@@ -86,4 +99,69 @@ export interface PanelDescriptor {
 
 export interface PanelRuntime {
   register(descriptor: PanelDescriptor, identity?: unknown): (() => void) | undefined;
+}
+
+/** Key flags delivered by the scene UI kit's `useInput` (Ink names). */
+export interface SceneKeyFlags {
+  readonly upArrow?: boolean;
+  readonly downArrow?: boolean;
+  readonly leftArrow?: boolean;
+  readonly rightArrow?: boolean;
+  readonly home?: boolean;
+  readonly end?: boolean;
+  readonly return?: boolean;
+  readonly escape?: boolean;
+  readonly backspace?: boolean;
+  readonly delete?: boolean;
+  readonly ctrl?: boolean;
+  readonly meta?: boolean;
+  readonly super?: boolean;
+  readonly shift?: boolean;
+  readonly isPasted?: boolean;
+}
+
+/** The subset of the scene UI kit this plugin uses. */
+export interface SceneUi {
+  readonly Box: DshComponent;
+  readonly Text: DshComponent;
+  useInput(
+    handler: (input: string, key: SceneKeyFlags) => void,
+    options?: { readonly isActive?: boolean },
+  ): void;
+  useTerminalSize(): { readonly columns: number; readonly rows: number };
+}
+
+/** Props passed to a full-screen scene registered through `ctx.tuiScenes`. */
+export interface SceneProps {
+  readonly React: DshReact;
+  readonly ui: SceneUi;
+  close(): void;
+}
+
+export interface SceneDescriptor {
+  readonly id: string;
+  readonly title?: string;
+  readonly component: (props: SceneProps) => unknown;
+}
+
+export interface SceneRuntime {
+  register(descriptor: SceneDescriptor, identity?: unknown): (() => void) | undefined;
+  open(id: string): boolean;
+}
+
+/** The subset of `ctx.tuiDialogs` this plugin uses for the fallback. */
+export interface DialogRuntime {
+  input(request: {
+    readonly title: string;
+    readonly placeholder?: string;
+    readonly initial?: string;
+    readonly timeoutMs?: number;
+  }): Promise<string | undefined>;
+  confirm(request: {
+    readonly title: string;
+    readonly message?: string;
+    readonly confirmLabel?: string;
+    readonly cancelLabel?: string;
+    readonly timeoutMs?: number;
+  }): Promise<boolean>;
 }

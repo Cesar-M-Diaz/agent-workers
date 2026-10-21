@@ -1,14 +1,17 @@
 import { ActionConfirmation, type ActionKind, type PendingAction } from './actions.js';
 import {
   ControlClient,
+  type ControlRequestError,
   isControlRequestError,
   type JobCapabilities,
   type JobView,
   type OwnerDescriptor,
+  type SteerResult,
 } from './control-client.js';
 import type { ControlState, JobControlView } from './model.js';
 import { sanitizeText } from './sanitize.js';
 import { isActiveStatus, StateReader, type WorkerJob } from './state-reader.js';
+import { MAX_STEER_CHARS } from './steer-editor.js';
 
 export const ACTIVE_POLL_MS = 1000;
 export const IDLE_POLL_MS = 4000;
@@ -45,6 +48,32 @@ export interface StoreOptions {
   controlClient?: ControlClient;
   now?: () => number;
   confirmTimeoutMs?: number;
+}
+
+/** Local steer rejection (no live owner, unsupported capability, bad length). */
+export class SteerRequestError extends Error {
+  readonly status: number;
+  readonly code: string;
+
+  constructor(status: number, code: string, message: string) {
+    super(message);
+    this.name = 'SteerRequestError';
+    this.status = status;
+    this.code = code;
+  }
+}
+
+export type SteerOutcome =
+  | { readonly ok: true; readonly result: SteerResult }
+  | { readonly ok: false; readonly error: SteerRequestError | ControlRequestError };
+
+function steerErrorText(cause: unknown): string {
+  if (isControlRequestError(cause)) {
+    const detail = sanitizeText(cause.message) || 'request failed';
+    return `${cause.code}: ${detail}`;
+  }
+  const detail = cause instanceof Error ? cause.message : String(cause);
+  return sanitizeText(detail) || 'steer failed';
 }
 
 type Availability =
@@ -106,6 +135,7 @@ export class WorkersStore {
   private started = false;
   private visible = false;
   private disposed = false;
+  private steerTarget: string | undefined;
 
   constructor(stateDir: string, options: StoreOptions = {}) {
     this.reader = options.reader ?? new StateReader(stateDir);
@@ -338,10 +368,113 @@ export class WorkersStore {
     if (this.disposed) return;
     this.disposed = true;
     this.started = false;
+    this.steerTarget = undefined;
     this.clearTimer();
     this.clearControlTimer();
     this.clearConfirmTimer();
     this.listeners.clear();
+  }
+
+  /**
+   * Remember which job the scene should steer. Scenes are registered once, so
+   * the panel hands the target over through the store before opening it.
+   * Returns false and explains why in the footer when steer is unavailable.
+   */
+  prepareSteer(jobId: string): boolean {
+    if (this.disposed) return false;
+    const availability = this.availability(jobId, 'steer');
+    if (!availability.ok) {
+      this.patch({
+        notice: { jobId, text: `steer unavailable: ${availability.reason}` },
+      });
+      return false;
+    }
+    this.steerTarget = jobId;
+    return true;
+  }
+
+  getSteerTarget(): string | undefined {
+    return this.steerTarget;
+  }
+
+  clearSteerTarget(): void {
+    this.steerTarget = undefined;
+  }
+
+  reportSteerUnavailable(jobId: string, reason: string): void {
+    const detail = sanitizeText(reason) || 'not available';
+    this.patch({ notice: { jobId, text: `steer unavailable: ${detail}` } });
+  }
+
+  /**
+   * `POST /v1/jobs/:id/steer`, routed to the job's live owner exactly like the
+   * other actions. Validates the message locally, keeps one action in flight
+   * per job and refreshes both read models after a 2xx. The returned error is
+   * typed: a `ControlRequestError` for HTTP/network failures and a
+   * `SteerRequestError` for local rejections (no HTTP call in that case).
+   */
+  async requestSteer(jobId: string, message: string): Promise<SteerOutcome> {
+    if (this.disposed) {
+      return {
+        ok: false,
+        error: new SteerRequestError(0, 'steer_unavailable', 'store disposed'),
+      };
+    }
+    const availability = this.availability(jobId, 'steer');
+    if (!availability.ok) {
+      this.patch({ notice: { jobId, text: `steer unavailable: ${availability.reason}` } });
+      return {
+        ok: false,
+        error: new SteerRequestError(0, 'steer_unavailable', availability.reason),
+      };
+    }
+    if (message.length < 1) {
+      const error = new SteerRequestError(0, 'invalid_message', 'message must not be empty');
+      this.patch({ notice: { jobId, text: `steer failed: ${error.code}: ${error.message}` } });
+      return { ok: false, error };
+    }
+    if (message.length > MAX_STEER_CHARS) {
+      const error = new SteerRequestError(
+        0,
+        'invalid_message',
+        `message must be at most ${MAX_STEER_CHARS} characters`,
+      );
+      this.patch({ notice: { jobId, text: `steer failed: ${error.code}: ${error.message}` } });
+      return { ok: false, error };
+    }
+
+    this.patch({
+      busy: addToSet(this.snapshot.busy, jobId, true),
+      actionErrors: addToMap(this.snapshot.actionErrors, jobId, undefined),
+      notice: { jobId, text: 'steer…' },
+    });
+
+    try {
+      const result = await this.client.steer(availability.owner, jobId, message);
+      const steeredId = sanitizeText(result.steered_job_id) || 'unknown';
+      const status = sanitizeText(result.status);
+      this.patch({
+        notice: {
+          jobId,
+          text: `steer → ${steeredId}${status !== '' ? ` · ${status}` : ''}`,
+        },
+      });
+      await this.refreshAfterAction();
+      return { ok: true, result };
+    } catch (cause) {
+      const text = steerErrorText(cause);
+      this.patch({
+        actionErrors: addToMap(this.snapshot.actionErrors, jobId, text),
+        notice: { jobId, text: `steer failed: ${text}` },
+      });
+      if (isControlRequestError(cause)) return { ok: false, error: cause };
+      return {
+        ok: false,
+        error: new SteerRequestError(0, 'steer_failed', sanitizeText(text) || 'steer failed'),
+      };
+    } finally {
+      this.patch({ busy: addToSet(this.snapshot.busy, jobId, false) });
+    }
   }
 
   private availability(jobId: string, action: ActionKind): Availability {

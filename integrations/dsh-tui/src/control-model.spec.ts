@@ -107,9 +107,9 @@ test('shows the control banner line and available actions from capabilities', as
   assert.ok(online.header.includes('control: 1 owner'));
   assert.equal(online.control, 'control: 1 owner');
   assert.equal(online.banner, 'all groups');
-  assert.ok(online.detail?.lines.includes('cancel ✓ · steer unavailable'));
+  assert.ok(online.detail?.lines.includes('cancel ✓ · steer ✗'));
   assert.ok(online.detail?.lines.includes('cleanup ✓ · delete ✗'));
-  assert.equal(online.footer, '↑↓ enter r a · c x d');
+  assert.equal(online.footer, '↑↓ enter r a · c s x d');
 
   const offline = buildModel(jobs, {
     width: 64,

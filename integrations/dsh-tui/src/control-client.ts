@@ -82,6 +82,20 @@ export interface DeleteResult {
   branch_deleted: boolean;
 }
 
+/** `POST /v1/jobs/:id/steer` (contract §5). */
+export interface SteerResult {
+  job_id: string;
+  steered_job_id: string;
+  cancelled: boolean;
+  status: string;
+  label?: string;
+  group_id?: string;
+  group_name?: string;
+  queue_position?: number;
+  cwd?: string;
+  steered_from?: string;
+}
+
 export interface ControlErrorInfo {
   readonly status: number;
   readonly code: string;
@@ -341,6 +355,22 @@ export class ControlClient {
     );
   }
 
+  steer(
+    owner: OwnerDescriptor,
+    jobId: string,
+    message: string,
+    timeoutS?: number,
+  ): Promise<SteerResult> {
+    const body: { message: string; timeout_s?: number } = { message };
+    if (timeoutS !== undefined) body.timeout_s = timeoutS;
+    return this.request<SteerResult>(
+      owner,
+      'POST',
+      `/v1/jobs/${encodeURIComponent(jobId)}/steer`,
+      body,
+    );
+  }
+
   private async probeHealth(owner: OwnerDescriptor): Promise<boolean> {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), this.timeoutMs);
@@ -436,6 +466,15 @@ export function remove(
   discard: boolean,
 ): Promise<DeleteResult> {
   return sharedClient.remove(owner, jobId, discard);
+}
+
+export function steer(
+  owner: OwnerDescriptor,
+  jobId: string,
+  message: string,
+  timeoutS?: number,
+): Promise<SteerResult> {
+  return sharedClient.steer(owner, jobId, message, timeoutS);
 }
 
 export function resetHealthBackoff(): void {
