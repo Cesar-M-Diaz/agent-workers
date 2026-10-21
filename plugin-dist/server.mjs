@@ -36789,19 +36789,20 @@ async function resolveOpenCodeGoApiKey(config2) {
 }
 
 // src/jobs.ts
-import { randomUUID } from "node:crypto";
+import { randomUUID as randomUUID2 } from "node:crypto";
 import { createWriteStream } from "node:fs";
-import { access, mkdir as mkdir3, readdir as readdir4, readFile as readFile7, rename, rm as rm3, stat as stat4, writeFile } from "node:fs/promises";
-import { basename, join as join6 } from "node:path";
+import { access, mkdir as mkdir4, readdir as readdir5, readFile as readFile8, rename as rename2, rm as rm4, stat as stat4, writeFile as writeFile2 } from "node:fs/promises";
+import { basename, join as join7 } from "node:path";
 import { setTimeout as delay2 } from "node:timers/promises";
 
 // src/admin.ts
-import { readdir, readFile as readFile3, rm as rm2 } from "node:fs/promises";
-import { join as join3 } from "node:path";
+import { readdir as readdir2, readFile as readFile4, rm as rm3 } from "node:fs/promises";
+import { join as join4 } from "node:path";
 
-// src/worktree.ts
-import { mkdir as mkdir2, rm, stat as stat3 } from "node:fs/promises";
-import { isAbsolute as isAbsolute2, join as join2, relative as relative2, resolve as resolve3 } from "node:path";
+// src/control/descriptor.ts
+import { randomUUID } from "node:crypto";
+import { chmod as chmod2, lstat, mkdir as mkdir2, readdir, readFile as readFile3, rename, rm, writeFile } from "node:fs/promises";
+import { join as join2 } from "node:path";
 
 // src/proc.ts
 import {
@@ -36953,7 +36954,108 @@ async function waitForExit(child, timeoutMs) {
   });
 }
 
+// src/control/descriptor.ts
+var CONTROL_PROTOCOL = "agent-workers-control/1";
+var DESCRIPTOR_FILE = /^[A-Za-z0-9_-]+\.json$/;
+var OWNER_ID = /^[A-Za-z0-9_-]+$/;
+function controlDir(stateDir) {
+  return join2(stateDir, "control");
+}
+function descriptorPath(stateDir, ownerId) {
+  if (!OWNER_ID.test(ownerId)) throw new Error("invalid owner id");
+  return join2(controlDir(stateDir), `${ownerId}.json`);
+}
+async function writeDescriptor(stateDir, descriptor) {
+  const dir = controlDir(stateDir);
+  await mkdir2(dir, { recursive: true, mode: 448 });
+  await chmod2(dir, 448);
+  const path = descriptorPath(stateDir, descriptor.owner_id);
+  const temp = join2(dir, `.${descriptor.owner_id}.${randomUUID()}.tmp`);
+  try {
+    await writeFile(temp, JSON.stringify(descriptor), { mode: 384 });
+    await chmod2(temp, 384);
+    await rename(temp, path);
+  } catch (err) {
+    await rm(temp, { force: true }).catch(() => void 0);
+    throw err;
+  }
+}
+async function removeDescriptor(stateDir, ownerId) {
+  try {
+    await rm(descriptorPath(stateDir, ownerId), { force: true });
+  } catch (err) {
+    if (err.code !== "ENOENT") throw err;
+  }
+}
+function isDescriptor(value, fileOwnerId) {
+  if (typeof value !== "object" || value === null) return false;
+  const descriptor = value;
+  return descriptor.protocol === CONTROL_PROTOCOL && descriptor.owner_id === fileOwnerId && typeof descriptor.pid === "number" && Number.isInteger(descriptor.pid) && descriptor.pid > 0;
+}
+async function readDescriptors(stateDir) {
+  const dir = controlDir(stateDir);
+  let entries;
+  try {
+    entries = await readdir(dir, { withFileTypes: true });
+  } catch {
+    return [];
+  }
+  const descriptors = [];
+  for (const entry of entries) {
+    if (!DESCRIPTOR_FILE.test(entry.name)) continue;
+    const path = join2(dir, entry.name);
+    try {
+      const info = await lstat(path);
+      if (!info.isFile()) continue;
+      if ((info.mode & 63) !== 0) continue;
+      const parsed = JSON.parse(await readFile3(path, "utf8"));
+      const fileOwnerId = entry.name.slice(0, -".json".length);
+      if (!isDescriptor(parsed, fileOwnerId)) continue;
+      descriptors.push(parsed);
+    } catch {
+    }
+  }
+  return descriptors.sort((a, b) => a.owner_id.localeCompare(b.owner_id));
+}
+async function isOwnerLive(descriptor) {
+  if (!Number.isInteger(descriptor.pid) || descriptor.pid <= 0) return false;
+  try {
+    process.kill(descriptor.pid, 0);
+  } catch (err) {
+    if (err.code !== "EPERM") return false;
+  }
+  if (descriptor.pid_start === void 0) return true;
+  const current = await readStartTime(descriptor.pid);
+  if (current === void 0) return true;
+  return current === descriptor.pid_start;
+}
+async function liveOwnerIds(stateDir, selfOwnerId) {
+  const live = /* @__PURE__ */ new Set();
+  for (const descriptor of await readDescriptors(stateDir)) {
+    if (descriptor.owner_id === selfOwnerId) continue;
+    if (await isOwnerLive(descriptor)) live.add(descriptor.owner_id);
+  }
+  return live;
+}
+async function pruneStaleDescriptors(stateDir) {
+  for (const descriptor of await readDescriptors(stateDir)) {
+    let live = false;
+    try {
+      live = await isOwnerLive(descriptor);
+    } catch {
+      continue;
+    }
+    if (live) continue;
+    try {
+      await removeDescriptor(stateDir, descriptor.owner_id);
+    } catch {
+    }
+  }
+}
+
 // src/worktree.ts
+import { mkdir as mkdir3, rm as rm2, stat as stat3 } from "node:fs/promises";
+import { isAbsolute as isAbsolute2, join as join3, relative as relative2, resolve as resolve3 } from "node:path";
 var SAFE_REF = /^[A-Za-z0-9._/-]+$/;
 var MAX_DIFF_BYTES = 200 * 1024;
 function gitError(action, result) {
@@ -36983,9 +37085,9 @@ async function resolveBaseCommit(repo, baseRef) {
 async function createWorktree(input2) {
   const repo = await repoRoot(input2.cwd);
   const baseCommit = await resolveBaseCommit(repo, input2.baseRef);
-  const path = join2(input2.worktreeRoot, input2.jobId);
+  const path = join3(input2.worktreeRoot, input2.jobId);
   const branch = `dsh/${input2.jobId}`;
-  await mkdir2(input2.worktreeRoot, { recursive: true, mode: 448 });
+  await mkdir3(input2.worktreeRoot, { recursive: true, mode: 448 });
   try {
     await stat3(path);
     throw new Error(`worktree path already exists: ${path}`);
@@ -37128,7 +37230,7 @@ async function cleanupWorktree(info, discardChanges, worktreeRoot) {
   if (remove.code !== 0) {
     if (!isBrokenWorktreeMetadata(remove.stderr))
       throw gitError("cannot remove git worktree", remove);
-    await rm(info.path, { recursive: true, force: true });
+    await rm2(info.path, { recursive: true, force: true });
     await runCapture("git", ["-C", info.repoRoot, "worktree", "prune", "--expire", "now"]);
   }
   const branch = await runCapture("git", ["-C", info.repoRoot, "branch", "-D", info.branch]);
@@ -37137,6 +37239,49 @@ async function cleanupWorktree(info, discardChanges, worktreeRoot) {
 
 // src/admin.ts
 var ACTIVE_STATUSES = /* @__PURE__ */ new Set(["queued", "starting", "running"]);
+function resourcesOf(id, job) {
+  return {
+    id,
+    status: job.status,
+    worktreePath: job.worktree?.path,
+    sessionId: job.sessionId,
+    sessionDir: job.sessionDir
+  };
+}
+function isActiveStatus(status) {
+  return typeof status === "string" && ACTIVE_STATUSES.has(status);
+}
+function busyKinds(target, other) {
+  const kinds = [];
+  if (target.worktreePath && target.worktreePath === other.worktreePath) {
+    kinds.push("worktree_busy");
+  }
+  const sameSessionDir = target.sessionDir !== void 0 && target.sessionDir === other.sessionDir;
+  const sameSessionId = target.sessionId !== void 0 && target.sessionId === other.sessionId;
+  if (sameSessionDir || sameSessionId) kinds.push("session_busy");
+  return kinds;
+}
+async function readStoredJobs(stateDir) {
+  let entries;
+  try {
+    entries = await readdir2(join4(stateDir, "jobs"), { withFileTypes: true });
+  } catch {
+    return [];
+  }
+  const jobs = [];
+  for (const entry of entries) {
+    if (!entry.isDirectory() || !/^[A-Za-z0-9_-]+$/.test(entry.name)) continue;
+    try {
+      const job = JSON.parse(
+        await readFile4(join4(stateDir, "jobs", entry.name, "job.json"), "utf8")
+      );
+      if (typeof job !== "object" || job === null) continue;
+      jobs.push({ id: entry.name, job });
+    } catch {
+    }
+  }
+  return jobs;
+}
 var JobAdminError = class extends Error {
   constructor(code, message, status = 400, details = {}) {
     super(message);
@@ -37153,12 +37298,12 @@ function jobDir(stateDir, jobId) {
   if (!/^[A-Za-z0-9_-]+$/.test(jobId)) {
     throw new JobAdminError("invalid_job_id", "invalid job id", 400);
   }
-  return join3(stateDir, "jobs", jobId);
+  return join4(stateDir, "jobs", jobId);
 }
 async function readAdminJob(stateDir, jobId) {
   try {
     return JSON.parse(
-      await readFile3(join3(jobDir(stateDir, jobId), "job.json"), "utf8")
+      await readFile4(join4(jobDir(stateDir, jobId), "job.json"), "utf8")
     );
   } catch (err) {
     if (err.code === "ENOENT") {
@@ -37180,7 +37325,7 @@ function restoreWorktree(saved) {
   };
 }
 async function deleteJobRecord(stateDir, jobId, options = {}) {
-  const worktreeRoot = options.worktreeRoot ?? join3(stateDir, "worktrees");
+  const worktreeRoot = options.worktreeRoot ?? join4(stateDir, "worktrees");
   const saved = await readAdminJob(stateDir, jobId);
   const status = typeof saved.status === "string" ? saved.status : "unknown";
   if (ACTIVE_STATUSES.has(status)) {
@@ -37213,42 +37358,45 @@ async function deleteJobRecord(stateDir, jobId, options = {}) {
     worktree = cleaned.worktree;
     branchDeleted = cleaned.branchDeleted;
   }
-  await rm2(jobDir(stateDir, jobId), { recursive: true, force: true });
+  await rm3(jobDir(stateDir, jobId), { recursive: true, force: true });
   return { job_id: jobId, deleted: true, worktree, branch_deleted: branchDeleted };
 }
-async function pruneExpiredJobs(stateDir, retentionDays, worktreeRoot = join3(stateDir, "worktrees")) {
-  const result = { deleted: [], preserved_dirty: [], errors: [] };
+async function pruneExpiredJobs(stateDir, retentionDays, worktreeRoot = join4(stateDir, "worktrees"), selfOwnerId) {
+  const result = {
+    deleted: [],
+    preserved_dirty: [],
+    skipped_busy: [],
+    errors: []
+  };
   if (!Number.isFinite(retentionDays) || retentionDays <= 0) return result;
   const cutoff = Date.now() - retentionDays * 24 * 60 * 60 * 1e3;
-  let entries;
-  try {
-    entries = await readdir(join3(stateDir, "jobs"), { withFileTypes: true });
-  } catch {
-    return result;
-  }
-  for (const entry of entries) {
-    if (!entry.isDirectory() || !/^[A-Za-z0-9_-]+$/.test(entry.name)) continue;
-    let saved;
-    try {
-      saved = JSON.parse(
-        await readFile3(join3(stateDir, "jobs", entry.name, "job.json"), "utf8")
-      );
-    } catch {
-      continue;
-    }
+  const stored = await readStoredJobs(stateDir);
+  const liveOwners = await liveOwnerIds(stateDir, selfOwnerId ?? "");
+  const active = stored.filter((entry) => isActiveStatus(entry.job.status)).map((entry) => resourcesOf(entry.id, entry.job));
+  for (const entry of stored) {
+    const saved = entry.job;
     const status = typeof saved.status === "string" ? saved.status : "unknown";
     if (ACTIVE_STATUSES.has(status)) continue;
     const finished = saved.finishedAt === void 0 ? Number.NaN : Date.parse(saved.finishedAt);
     if (!Number.isFinite(finished) || finished > cutoff) continue;
+    const candidate = resourcesOf(entry.id, saved);
+    const busy = active.some(
+      (other) => other.id !== candidate.id && busyKinds(candidate, other).length > 0
+    );
+    if (busy) {
+      result.skipped_busy.push(entry.id);
+      continue;
+    }
+    if (typeof saved.ownerId === "string" && liveOwners.has(saved.ownerId)) continue;
     try {
-      await deleteJobRecord(stateDir, entry.name, { discardChanges: false, worktreeRoot });
-      result.deleted.push(entry.name);
+      await deleteJobRecord(stateDir, entry.id, { discardChanges: false, worktreeRoot });
+      result.deleted.push(entry.id);
     } catch (err) {
       if (err instanceof JobAdminError && err.code === "worktree_dirty") {
-        result.preserved_dirty.push(entry.name);
+        result.preserved_dirty.push(entry.id);
       } else {
         result.errors.push({
-          job_id: entry.name,
+          job_id: entry.id,
           message: err instanceof Error ? err.message : String(err)
         });
       }
@@ -37258,8 +37406,8 @@ async function pruneExpiredJobs(stateDir, retentionDays, worktreeRoot = join3(st
 }
 
 // src/engines/dsh.ts
-import { readdir as readdir2, readFile as readFile4 } from "node:fs/promises";
-import { join as join4 } from "node:path";
+import { readdir as readdir3, readFile as readFile5 } from "node:fs/promises";
+import { join as join5 } from "node:path";
 
 // src/errors.ts
 var JobError = class extends Error {
@@ -37453,7 +37601,7 @@ var DshEngine = class {
   }
   async availableProfiles() {
     try {
-      const entries = await readdir2(join4(this.config.dshHome, "profiles"), {
+      const entries = await readdir3(join5(this.config.dshHome, "profiles"), {
         withFileTypes: true
       });
       return entries.filter((entry) => entry.isDirectory()).map((entry) => entry.name).sort();
@@ -37478,7 +37626,7 @@ var DshEngine = class {
   async readProfileMetadata(profile) {
     try {
       const raw = JSON.parse(
-        await readFile4(join4(this.config.dshHome, "profiles", profile, "metadata.json"), "utf8")
+        await readFile5(join5(this.config.dshHome, "profiles", profile, "metadata.json"), "utf8")
       );
       return {
         ...typeof raw.provider === "string" && raw.provider.trim() ? { provider: raw.provider.trim() } : {},
@@ -37535,8 +37683,8 @@ var DshEngine = class {
 };
 
 // src/engines/pi.ts
-import { readdir as readdir3, readFile as readFile5 } from "node:fs/promises";
-import { join as join5 } from "node:path";
+import { readdir as readdir4, readFile as readFile6 } from "node:fs/promises";
+import { join as join6 } from "node:path";
 
 // src/engines/pi-fold.ts
 import { StringDecoder as StringDecoder2 } from "node:string_decoder";
@@ -37837,7 +37985,7 @@ var PiEngine = class {
   }
   async hasSession(sessionDir, sessionId) {
     try {
-      const files = await readdir3(join5(sessionDir, "pi-sessions"));
+      const files = await readdir4(join6(sessionDir, "pi-sessions"));
       return files.some((name) => name.endsWith(".jsonl") && name.includes(sessionId));
     } catch {
       return false;
@@ -37871,7 +38019,7 @@ var PiEngine = class {
       "--no-context-files",
       "--no-approve",
       "--session-dir",
-      join5(spec.sessionDir, "pi-sessions"),
+      join6(spec.sessionDir, "pi-sessions"),
       "--tools",
       spec.access === "workspace-write" ? "read,bash,edit,write" : "read,grep,find,ls"
     );
@@ -37893,7 +38041,7 @@ var PiEngine = class {
     const file2 = this.config.piProfilesFile;
     if (!file2) return {};
     try {
-      const raw = JSON.parse(await readFile5(file2, "utf8"));
+      const raw = JSON.parse(await readFile6(file2, "utf8"));
       const result = {};
       for (const [name, value] of Object.entries(raw)) {
         if (value === null || typeof value !== "object" || Array.isArray(value)) continue;
@@ -37933,7 +38081,7 @@ function createEngines(config2, baseEnv) {
 }
 
 // src/events.ts
-import { readFile as readFile6 } from "node:fs/promises";
+import { readFile as readFile7 } from "node:fs/promises";
 var DEFAULT_LIMIT = 200;
 var MAX_LIMIT = 500;
 var MAX_RETURNED_EVENT_CHARS = 12e3;
@@ -37982,7 +38130,7 @@ function parseEvent(line, cursor) {
 async function readEventPage(eventsPath, cursor = 0, limit) {
   let text;
   try {
-    text = await readFile6(eventsPath, "utf8");
+    text = await readFile7(eventsPath, "utf8");
   } catch (err) {
     if (err.code === "ENOENT") {
       return { events: [], next_cursor: 0, total_events: 0, has_more: false };
@@ -38040,6 +38188,9 @@ function estimateCostUsd(provider, model, usage) {
   const cacheWrite = usage.cacheWriteTokens ?? 0;
   return (input2 * rates.input + output2 * rates.output + cacheRead * rates.cacheRead + cacheWrite * rates.cacheWrite) / 1e6;
 }
+
+// src/version.ts
+var VERSION = "0.4.0";
 
 // src/watchdog.ts
 function formatAge(milliseconds) {
@@ -38198,7 +38349,7 @@ function persisted(job) {
   };
 }
 function fromPersisted(saved, engine) {
-  const dir = join6(saved.jobPath, "..");
+  const dir = join7(saved.jobPath, "..");
   const backend = saved.backend === "pi" ? "pi" : "dsh";
   const fold = engine.createFold(() => void 0);
   fold.state.sessionId = saved.sessionId;
@@ -38268,7 +38419,7 @@ var JobManager = class {
   writeLocks = /* @__PURE__ */ new Map();
   sessionLocks = /* @__PURE__ */ new Map();
   steering = /* @__PURE__ */ new Set();
-  ownerId = randomUUID();
+  ownerId = randomUUID2();
   writeSeq = 0;
   ownerStartedAt = (/* @__PURE__ */ new Date()).toISOString();
   defaultGroupId;
@@ -38280,12 +38431,51 @@ var JobManager = class {
   engines;
   backend;
   activeProfile;
+  pidStart;
+  control = null;
+  leaseReady = false;
+  get owner() {
+    return this.ownerId;
+  }
+  async writeLease() {
+    try {
+      await writeDescriptor(this.config.stateDir, {
+        protocol: CONTROL_PROTOCOL,
+        owner_id: this.ownerId,
+        pid: process.pid,
+        pid_start: this.pidStart,
+        started_at: this.ownerStartedAt,
+        version: VERSION,
+        state_dir: this.config.stateDir,
+        control: this.control,
+        ready: this.leaseReady
+      });
+    } catch (err) {
+      this.leaseError(err);
+    }
+  }
+  leaseError(err) {
+    process.stderr.write(
+      `${JSON.stringify({
+        event: "lease_error",
+        message: err instanceof Error ? err.message : String(err)
+      })}
+`
+    );
+  }
+  async publishControl(control) {
+    this.control = control;
+    await this.writeLease();
+  }
   async init() {
-    await mkdir3(join6(this.config.stateDir, "jobs"), { recursive: true, mode: 448 });
+    await mkdir4(join7(this.config.stateDir, "jobs"), { recursive: true, mode: 448 });
+    this.pidStart = await readStartTime(process.pid);
+    await this.writeLease();
     await pruneExpiredJobs(
       this.config.stateDir,
       this.config.retentionDays,
-      this.config.worktreeRoot
+      this.config.worktreeRoot,
+      this.ownerId
     );
     this.engines = createEngines(this.config, (depth) => this.baseEnv(depth));
     const initialized = await Promise.all([this.engines.dsh.init(), this.engines.pi.init()]);
@@ -38320,6 +38510,9 @@ var JobManager = class {
     }
     this.engineVersion = this.backend === "dsh" ? initialized[0].version : initialized[1].version;
     await this.loadPreviousJobs();
+    this.leaseReady = true;
+    await this.writeLease();
+    await pruneStaleDescriptors(this.config.stateDir);
     this.startWatchdog();
   }
   startWatchdog() {
@@ -38374,21 +38567,25 @@ var JobManager = class {
     return this.profileStatus();
   }
   async loadPreviousJobs() {
-    const root = join6(this.config.stateDir, "jobs");
+    const root = join7(this.config.stateDir, "jobs");
     let entries;
     try {
-      entries = await readdir4(root, { withFileTypes: true });
+      entries = await readdir5(root, { withFileTypes: true });
     } catch {
       return;
     }
+    const liveOwners = await liveOwnerIds(this.config.stateDir, this.ownerId);
     for (const entry of entries) {
       if (!entry.isDirectory()) continue;
-      const jobPath = join6(root, entry.name, "job.json");
+      const jobPath = join7(root, entry.name, "job.json");
       try {
-        const saved = JSON.parse(await readFile7(jobPath, "utf8"));
+        const saved = JSON.parse(await readFile8(jobPath, "utf8"));
         if (!saved?.id) continue;
         const backend = saved.backend === "pi" ? "pi" : "dsh";
         const job = fromPersisted(saved, this.engineFor(backend));
+        if (!job.terminal && saved.ownerId !== void 0 && liveOwners.has(saved.ownerId)) {
+          continue;
+        }
         if (!job.terminal) {
           if (job.pid !== void 0 && job.pgidStartTime !== void 0) {
             const currentStart = await readStartTime(job.pid);
@@ -38470,7 +38667,7 @@ var JobManager = class {
       throw new JobError("queue_full", `worker queue is full (${this.config.maxQueue})`);
     }
     const now = (/* @__PURE__ */ new Date()).toISOString();
-    const id = `j_${randomUUID().replaceAll("-", "").slice(0, 12)}`;
+    const id = `j_${randomUUID2().replaceAll("-", "").slice(0, 12)}`;
     const timeoutMs = Math.min(
       this.config.maxTimeoutMs,
       Math.max(6e4, (input2.timeout_s ?? Math.round(this.config.defaultTimeoutMs / 1e3)) * 1e3)
@@ -38608,9 +38805,9 @@ var JobManager = class {
     if (sessionId) this.sessionLocks.set(sessionId, id);
     const resolvedGroupId = groupId ?? this.defaultGroupId;
     const resolvedGroupName = groupName ?? this.defaultGroupName;
-    const dir = join6(this.config.stateDir, "jobs", id);
+    const dir = join7(this.config.stateDir, "jobs", id);
     sessionDir ??= dir;
-    await mkdir3(dir, { recursive: true, mode: 448 });
+    await mkdir4(dir, { recursive: true, mode: 448 });
     const job = {
       id,
       label: input2.label,
@@ -38637,10 +38834,10 @@ var JobManager = class {
       alerts: [],
       fold: engine.createFold(() => void 0),
       terminal: false,
-      eventsPath: join6(dir, "events.ndjson"),
-      finalPath: join6(dir, "final.md"),
-      stderrPath: join6(dir, "stderr.log"),
-      jobPath: join6(dir, "job.json"),
+      eventsPath: join7(dir, "events.ndjson"),
+      finalPath: join7(dir, "final.md"),
+      stderrPath: join7(dir, "stderr.log"),
+      jobPath: join7(dir, "job.json"),
       dir,
       sessionDir
     };
@@ -38782,7 +38979,7 @@ var JobManager = class {
     if (fold.finalText !== void 0) {
       job.finalText = fold.finalText;
       try {
-        await writeFile(job.finalPath, fold.finalText, { mode: 384 });
+        await writeFile2(job.finalPath, fold.finalText, { mode: 384 });
       } catch {
       }
     }
@@ -39057,7 +39254,7 @@ var JobManager = class {
     let final = job.finalText;
     if (final === void 0) {
       try {
-        final = await readFile7(job.finalPath, "utf8");
+        final = await readFile8(job.finalPath, "utf8");
       } catch {
         final = void 0;
       }
@@ -39098,9 +39295,52 @@ var JobManager = class {
     }
     return output2;
   }
+  jobResources(job) {
+    return {
+      id: job.id,
+      status: job.status,
+      worktreePath: job.worktree?.path,
+      sessionId: job.sessionId ?? job.fold.state.sessionId,
+      sessionDir: job.sessionDir
+    };
+  }
+  /**
+   * Busy checks combine this manager's jobs with foreign jobs that only exist
+   * on disk. A job never blocks itself, and terminal jobs hold no resources.
+   */
+  async busyAgainst(job) {
+    const target = this.jobResources(job);
+    const busy = /* @__PURE__ */ new Map();
+    const consider = (other) => {
+      if (other.id === job.id || !isActiveStatus(other.status)) return;
+      for (const kind of busyKinds(target, other)) {
+        if (!busy.has(kind)) busy.set(kind, other.id);
+      }
+    };
+    const seen = /* @__PURE__ */ new Set([job.id]);
+    for (const other of this.jobs.values()) {
+      if (seen.has(other.id)) continue;
+      seen.add(other.id);
+      consider(this.jobResources(other));
+    }
+    for (const stored of await readStoredJobs(this.config.stateDir)) {
+      if (seen.has(stored.id)) continue;
+      seen.add(stored.id);
+      consider(resourcesOf(stored.id, stored.job));
+    }
+    return busy;
+  }
   async cleanup(jobId, discardChanges) {
     const job = await this.requireJob(jobId);
     if (!job.terminal) throw new JobError("not_terminal", "cannot clean up a non-terminal job");
+    const busy = await this.busyAgainst(job);
+    const worktreeOwner = busy.get("worktree_busy");
+    if (worktreeOwner && job.worktree) {
+      throw new JobError(
+        "worktree_busy",
+        `job ${worktreeOwner} still uses worktree ${job.worktree.path}`
+      );
+    }
     if (!job.worktree || job.cleaned)
       return { job_id: job.id, worktree: "none", branch_deleted: false };
     const result = await cleanupWorktree(job.worktree, discardChanges, this.config.worktreeRoot);
@@ -39115,13 +39355,19 @@ var JobManager = class {
   async delete(jobId, discardChanges) {
     const job = await this.requireJob(jobId);
     if (!job.terminal) throw new JobError("not_terminal", "cannot delete a non-terminal job");
-    const busy = [...this.jobs.values()].find(
-      (other) => other.id !== job.id && !other.terminal && other.sessionDir === job.sessionDir
-    );
-    if (busy) {
+    const busy = await this.busyAgainst(job);
+    const worktreeOwner = busy.get("worktree_busy");
+    if (worktreeOwner && job.worktree) {
+      throw new JobError(
+        "worktree_busy",
+        `job ${worktreeOwner} still uses worktree ${job.worktree.path}`
+      );
+    }
+    const sessionOwner = busy.get("session_busy");
+    if (sessionOwner) {
       throw new JobError(
         "session_busy",
-        `job ${busy.id} still uses session directory ${job.sessionDir}`
+        `job ${sessionOwner} still uses session ${job.sessionDir || job.sessionId}`
       );
     }
     try {
@@ -39136,6 +39382,19 @@ var JobManager = class {
       throw err;
     }
   }
+  async controlFacts(jobId) {
+    const job = this.jobs.get(jobId);
+    if (!job) return void 0;
+    const busy = await this.busyAgainst(job);
+    return {
+      owner_id: job.ownerId,
+      owned: job.ownerId === this.ownerId,
+      worktree_busy: busy.has("worktree_busy"),
+      session_busy: busy.has("session_busy"),
+      supports_resume: this.engineFor(job.backend).supportsResume,
+      cleaned: job.cleaned === true || job.worktree?.cleaned === true
+    };
+  }
   async shutdown() {
     if (this.shuttingDown) return;
     this.shuttingDown = true;
@@ -39143,19 +39402,27 @@ var JobManager = class {
       clearInterval(this.watchdogTimer);
       this.watchdogTimer = void 0;
     }
-    for (const job of this.queue.splice(0)) {
-      await this.settle(job, "interrupted", "interrupted", { cleanTree: false });
-    }
-    for (const id of [...this.running]) {
-      const job = this.jobs.get(id);
-      if (!job || job.terminal) continue;
-      if (job.child) {
-        const killed = await killTree(job.child);
-        job.killedPids = killed.pids;
-        job.survivors = killed.survivors;
-        await waitForExit(job.child, 3e3);
+    try {
+      for (const job of this.queue.splice(0)) {
+        await this.settle(job, "interrupted", "interrupted", { cleanTree: false });
       }
-      await this.settle(job, "interrupted", "interrupted", { cleanTree: false });
+      for (const id of [...this.running]) {
+        const job = this.jobs.get(id);
+        if (!job || job.terminal) continue;
+        if (job.child) {
+          const killed = await killTree(job.child);
+          job.killedPids = killed.pids;
+          job.survivors = killed.survivors;
+          await waitForExit(job.child, 3e3);
+        }
+        await this.settle(job, "interrupted", "interrupted", { cleanTree: false });
+      }
+    } finally {
+      try {
+        await removeDescriptor(this.config.stateDir, this.ownerId);
+      } catch (err) {
+        this.leaseError(err);
+      }
     }
   }
   async settle(job, status, reason, options = {}) {
@@ -39267,16 +39534,16 @@ var JobManager = class {
   async writeJob(job) {
     const tmpPath = `${job.jobPath}.${process.pid}.${++this.writeSeq}.tmp`;
     try {
-      await writeFile(tmpPath, JSON.stringify(persisted(job), null, 2), { mode: 384 });
-      await rename(tmpPath, job.jobPath);
+      await writeFile2(tmpPath, JSON.stringify(persisted(job), null, 2), { mode: 384 });
+      await rename2(tmpPath, job.jobPath);
     } catch (err) {
-      await rm3(tmpPath, { force: true }).catch(() => void 0);
+      await rm4(tmpPath, { force: true }).catch(() => void 0);
       throw err;
     }
   }
   async eventsTail(path) {
     try {
-      const text = await readFile7(path, "utf8");
+      const text = await readFile8(path, "utf8");
       const lines = text.split("\n").filter(Boolean).slice(-30);
       return lines.join("\n").slice(-32768);
     } catch {
@@ -39284,9 +39551,6 @@ var JobManager = class {
     }
   }
 };
-
-// src/version.ts
-var VERSION = "0.4.0";
 
 // src/server.ts
 function jsonText(value) {

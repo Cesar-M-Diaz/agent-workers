@@ -2,24 +2,25 @@
 
 // src/ui.ts
 import { spawn as spawn2 } from "node:child_process";
-import { readFile as readFile5 } from "node:fs/promises";
+import { readFile as readFile7 } from "node:fs/promises";
 import { createServer } from "node:http";
-import { join as join5, resolve as resolve4 } from "node:path";
+import { join as join6, resolve as resolve4 } from "node:path";
 import { fileURLToPath } from "node:url";
 
 // src/admin.ts
-import { readdir, readFile, rm as rm2 } from "node:fs/promises";
-import { join as join2 } from "node:path";
+import { readdir as readdir2, readFile as readFile3, rm as rm3 } from "node:fs/promises";
+import { join as join3 } from "node:path";
 
-// src/worktree.ts
-import { mkdir, rm, stat } from "node:fs/promises";
-import { isAbsolute, join, relative, resolve } from "node:path";
+// src/control/descriptor.ts
+import { chmod, lstat, mkdir, readdir, readFile as readFile2, rename, rm, writeFile } from "node:fs/promises";
+import { join } from "node:path";
 
 // src/proc.ts
 import {
   execFile,
   spawn
 } from "node:child_process";
+import { readFile } from "node:fs/promises";
 import { promisify } from "node:util";
 var execFileAsync = promisify(execFile);
 async function runCapture(command, args, options = {}) {
@@ -41,8 +42,79 @@ async function runCapture(command, args, options = {}) {
     };
   }
 }
+async function readStartTime(pid) {
+  if (process.platform !== "linux") return void 0;
+  try {
+    const text = await readFile(`/proc/${pid}/stat`, "utf8");
+    const close = text.lastIndexOf(")");
+    if (close < 0) return void 0;
+    const fields = text.slice(close + 2).trim().split(/\s+/);
+    return fields[19];
+  } catch {
+    return void 0;
+  }
+}
+
+// src/control/descriptor.ts
+var CONTROL_PROTOCOL = "agent-workers-control/1";
+var DESCRIPTOR_FILE = /^[A-Za-z0-9_-]+\.json$/;
+function controlDir(stateDir) {
+  return join(stateDir, "control");
+}
+function isDescriptor(value, fileOwnerId) {
+  if (typeof value !== "object" || value === null) return false;
+  const descriptor = value;
+  return descriptor.protocol === CONTROL_PROTOCOL && descriptor.owner_id === fileOwnerId && typeof descriptor.pid === "number" && Number.isInteger(descriptor.pid) && descriptor.pid > 0;
+}
+async function readDescriptors(stateDir) {
+  const dir = controlDir(stateDir);
+  let entries;
+  try {
+    entries = await readdir(dir, { withFileTypes: true });
+  } catch {
+    return [];
+  }
+  const descriptors = [];
+  for (const entry2 of entries) {
+    if (!DESCRIPTOR_FILE.test(entry2.name)) continue;
+    const path = join(dir, entry2.name);
+    try {
+      const info = await lstat(path);
+      if (!info.isFile()) continue;
+      if ((info.mode & 63) !== 0) continue;
+      const parsed = JSON.parse(await readFile2(path, "utf8"));
+      const fileOwnerId = entry2.name.slice(0, -".json".length);
+      if (!isDescriptor(parsed, fileOwnerId)) continue;
+      descriptors.push(parsed);
+    } catch {
+    }
+  }
+  return descriptors.sort((a, b) => a.owner_id.localeCompare(b.owner_id));
+}
+async function isOwnerLive(descriptor) {
+  if (!Number.isInteger(descriptor.pid) || descriptor.pid <= 0) return false;
+  try {
+    process.kill(descriptor.pid, 0);
+  } catch (err) {
+    if (err.code !== "EPERM") return false;
+  }
+  if (descriptor.pid_start === void 0) return true;
+  const current = await readStartTime(descriptor.pid);
+  if (current === void 0) return true;
+  return current === descriptor.pid_start;
+}
+async function liveOwnerIds(stateDir, selfOwnerId) {
+  const live = /* @__PURE__ */ new Set();
+  for (const descriptor of await readDescriptors(stateDir)) {
+    if (descriptor.owner_id === selfOwnerId) continue;
+    if (await isOwnerLive(descriptor)) live.add(descriptor.owner_id);
+  }
+  return live;
+}
 
 // src/worktree.ts
+import { mkdir as mkdir2, rm as rm2, stat } from "node:fs/promises";
+import { isAbsolute, join as join2, relative, resolve } from "node:path";
 var MAX_DIFF_BYTES = 200 * 1024;
 function gitError(action, result) {
   return new Error(
@@ -103,7 +175,7 @@ async function cleanupWorktree(info, discardChanges, worktreeRoot) {
   if (remove.code !== 0) {
     if (!isBrokenWorktreeMetadata(remove.stderr))
       throw gitError("cannot remove git worktree", remove);
-    await rm(info.path, { recursive: true, force: true });
+    await rm2(info.path, { recursive: true, force: true });
     await runCapture("git", ["-C", info.repoRoot, "worktree", "prune", "--expire", "now"]);
   }
   const branch = await runCapture("git", ["-C", info.repoRoot, "branch", "-D", info.branch]);
@@ -112,6 +184,49 @@ async function cleanupWorktree(info, discardChanges, worktreeRoot) {
 
 // src/admin.ts
 var ACTIVE_STATUSES = /* @__PURE__ */ new Set(["queued", "starting", "running"]);
+function resourcesOf(id, job) {
+  return {
+    id,
+    status: job.status,
+    worktreePath: job.worktree?.path,
+    sessionId: job.sessionId,
+    sessionDir: job.sessionDir
+  };
+}
+function isActiveStatus(status) {
+  return typeof status === "string" && ACTIVE_STATUSES.has(status);
+}
+function busyKinds(target, other) {
+  const kinds = [];
+  if (target.worktreePath && target.worktreePath === other.worktreePath) {
+    kinds.push("worktree_busy");
+  }
+  const sameSessionDir = target.sessionDir !== void 0 && target.sessionDir === other.sessionDir;
+  const sameSessionId = target.sessionId !== void 0 && target.sessionId === other.sessionId;
+  if (sameSessionDir || sameSessionId) kinds.push("session_busy");
+  return kinds;
+}
+async function readStoredJobs(stateDir) {
+  let entries;
+  try {
+    entries = await readdir2(join3(stateDir, "jobs"), { withFileTypes: true });
+  } catch {
+    return [];
+  }
+  const jobs = [];
+  for (const entry2 of entries) {
+    if (!entry2.isDirectory() || !/^[A-Za-z0-9_-]+$/.test(entry2.name)) continue;
+    try {
+      const job = JSON.parse(
+        await readFile3(join3(stateDir, "jobs", entry2.name, "job.json"), "utf8")
+      );
+      if (typeof job !== "object" || job === null) continue;
+      jobs.push({ id: entry2.name, job });
+    } catch {
+    }
+  }
+  return jobs;
+}
 var JobAdminError = class extends Error {
   constructor(code, message, status = 400, details = {}) {
     super(message);
@@ -128,12 +243,12 @@ function jobDir(stateDir, jobId) {
   if (!/^[A-Za-z0-9_-]+$/.test(jobId)) {
     throw new JobAdminError("invalid_job_id", "invalid job id", 400);
   }
-  return join2(stateDir, "jobs", jobId);
+  return join3(stateDir, "jobs", jobId);
 }
 async function readAdminJob(stateDir, jobId) {
   try {
     return JSON.parse(
-      await readFile(join2(jobDir(stateDir, jobId), "job.json"), "utf8")
+      await readFile3(join3(jobDir(stateDir, jobId), "job.json"), "utf8")
     );
   } catch (err) {
     if (err.code === "ENOENT") {
@@ -155,7 +270,7 @@ function restoreWorktree(saved) {
   };
 }
 async function deleteJobRecord(stateDir, jobId, options = {}) {
-  const worktreeRoot = options.worktreeRoot ?? join2(stateDir, "worktrees");
+  const worktreeRoot = options.worktreeRoot ?? join3(stateDir, "worktrees");
   const saved = await readAdminJob(stateDir, jobId);
   const status = typeof saved.status === "string" ? saved.status : "unknown";
   if (ACTIVE_STATUSES.has(status)) {
@@ -188,42 +303,45 @@ async function deleteJobRecord(stateDir, jobId, options = {}) {
     worktree = cleaned.worktree;
     branchDeleted = cleaned.branchDeleted;
   }
-  await rm2(jobDir(stateDir, jobId), { recursive: true, force: true });
+  await rm3(jobDir(stateDir, jobId), { recursive: true, force: true });
   return { job_id: jobId, deleted: true, worktree, branch_deleted: branchDeleted };
 }
-async function pruneExpiredJobs(stateDir, retentionDays, worktreeRoot = join2(stateDir, "worktrees")) {
-  const result = { deleted: [], preserved_dirty: [], errors: [] };
+async function pruneExpiredJobs(stateDir, retentionDays, worktreeRoot = join3(stateDir, "worktrees"), selfOwnerId) {
+  const result = {
+    deleted: [],
+    preserved_dirty: [],
+    skipped_busy: [],
+    errors: []
+  };
   if (!Number.isFinite(retentionDays) || retentionDays <= 0) return result;
   const cutoff = Date.now() - retentionDays * 24 * 60 * 60 * 1e3;
-  let entries;
-  try {
-    entries = await readdir(join2(stateDir, "jobs"), { withFileTypes: true });
-  } catch {
-    return result;
-  }
-  for (const entry2 of entries) {
-    if (!entry2.isDirectory() || !/^[A-Za-z0-9_-]+$/.test(entry2.name)) continue;
-    let saved;
-    try {
-      saved = JSON.parse(
-        await readFile(join2(stateDir, "jobs", entry2.name, "job.json"), "utf8")
-      );
-    } catch {
-      continue;
-    }
+  const stored = await readStoredJobs(stateDir);
+  const liveOwners = await liveOwnerIds(stateDir, selfOwnerId ?? "");
+  const active = stored.filter((entry2) => isActiveStatus(entry2.job.status)).map((entry2) => resourcesOf(entry2.id, entry2.job));
+  for (const entry2 of stored) {
+    const saved = entry2.job;
     const status = typeof saved.status === "string" ? saved.status : "unknown";
     if (ACTIVE_STATUSES.has(status)) continue;
     const finished = saved.finishedAt === void 0 ? Number.NaN : Date.parse(saved.finishedAt);
     if (!Number.isFinite(finished) || finished > cutoff) continue;
+    const candidate = resourcesOf(entry2.id, saved);
+    const busy = active.some(
+      (other) => other.id !== candidate.id && busyKinds(candidate, other).length > 0
+    );
+    if (busy) {
+      result.skipped_busy.push(entry2.id);
+      continue;
+    }
+    if (typeof saved.ownerId === "string" && liveOwners.has(saved.ownerId)) continue;
     try {
-      await deleteJobRecord(stateDir, entry2.name, { discardChanges: false, worktreeRoot });
-      result.deleted.push(entry2.name);
+      await deleteJobRecord(stateDir, entry2.id, { discardChanges: false, worktreeRoot });
+      result.deleted.push(entry2.id);
     } catch (err) {
       if (err instanceof JobAdminError && err.code === "worktree_dirty") {
-        result.preserved_dirty.push(entry2.name);
+        result.preserved_dirty.push(entry2.id);
       } else {
         result.errors.push({
-          job_id: entry2.name,
+          job_id: entry2.id,
           message: err instanceof Error ? err.message : String(err)
         });
       }
@@ -233,9 +351,9 @@ async function pruneExpiredJobs(stateDir, retentionDays, worktreeRoot = join2(st
 }
 
 // src/config.ts
-import { chmod, mkdir as mkdir2, readFile as readFile2, stat as stat3 } from "node:fs/promises";
+import { chmod as chmod2, mkdir as mkdir3, readFile as readFile4, stat as stat3 } from "node:fs/promises";
 import { homedir as homedir2, tmpdir } from "node:os";
-import { join as join3, resolve as resolve3 } from "node:path";
+import { join as join4, resolve as resolve3 } from "node:path";
 
 // src/paths.ts
 import { realpath, stat as stat2 } from "node:fs/promises";
@@ -323,19 +441,19 @@ function isReadOnlyError(err) {
 async function ensurePrivateDir(path, fallbackName) {
   const dir = resolve3(expandHome(path));
   try {
-    await mkdir2(dir, { recursive: true, mode: 448 });
+    await mkdir3(dir, { recursive: true, mode: 448 });
     const info = await stat3(dir);
     if (!info.isDirectory()) throw new Error("not a directory");
-    await chmod(dir, 448);
+    await chmod2(dir, 448);
     return dir;
   } catch (err) {
     if (!isReadOnlyError(err)) {
       const message = err instanceof Error ? err.message : String(err);
       throw new Error(`state directory is not usable: ${dir}: ${message}`);
     }
-    const fallback = join3(tmpdir(), "agent-workers", fallbackName);
-    await mkdir2(fallback, { recursive: true, mode: 448 });
-    await chmod(fallback, 448);
+    const fallback = join4(tmpdir(), "agent-workers", fallbackName);
+    await mkdir3(fallback, { recursive: true, mode: 448 });
+    await chmod2(fallback, 448);
     process.stderr.write(
       `${JSON.stringify({
         event: "state_dir_fallback",
@@ -349,14 +467,14 @@ async function ensurePrivateDir(path, fallbackName) {
   }
 }
 async function defaultStateDir() {
-  const base = process.env.XDG_STATE_HOME?.trim() ? process.env.XDG_STATE_HOME.trim() : join3(homedir2(), ".local", "state");
-  const legacy = join3(base, "dsh-workers");
+  const base = process.env.XDG_STATE_HOME?.trim() ? process.env.XDG_STATE_HOME.trim() : join4(homedir2(), ".local", "state");
+  const legacy = join4(base, "dsh-workers");
   try {
     const info = await stat3(legacy);
     if (info.isDirectory()) return legacy;
   } catch {
   }
-  return join3(base, "agent-workers");
+  return join4(base, "agent-workers");
 }
 function splitList(raw) {
   if (!raw) return [];
@@ -372,11 +490,11 @@ async function resolveWorkerStateDir() {
 async function loadConfig() {
   const stateDir = await resolveWorkerStateDir();
   const worktreeRoot = await ensurePrivateDir(
-    pathEnv("AGENT_WORKERS_WORKTREE_ROOT") ?? join3(stateDir, "worktrees"),
+    pathEnv("AGENT_WORKERS_WORKTREE_ROOT") ?? join4(stateDir, "worktrees"),
     "worktrees"
   );
   const dshHome = await ensurePrivateDir(
-    pathEnv("AGENT_WORKERS_DSH_HOME") ?? join3(stateDir, "dsh-home"),
+    pathEnv("AGENT_WORKERS_DSH_HOME") ?? join4(stateDir, "dsh-home"),
     "dsh-home"
   );
   const rootValues = splitList(readEnv("AGENT_WORKERS_ALLOWED_ROOTS"));
@@ -409,7 +527,7 @@ async function loadConfig() {
     dshBin: readEnv("AGENT_WORKERS_DSH_BIN") ? resolve3(expandHome(readEnv("AGENT_WORKERS_DSH_BIN"))) : "dsh",
     piBin: readEnv("AGENT_WORKERS_PI_BIN") ? resolve3(expandHome(readEnv("AGENT_WORKERS_PI_BIN"))) : "pi",
     piDefaultProfile: readEnv("AGENT_WORKERS_PI_PROFILE")?.trim() || "default",
-    piProfilesFile: resolve3(expandHome(piProfilesFile || join3(stateDir, "pi-profiles.json"))),
+    piProfilesFile: resolve3(expandHome(piProfilesFile || join4(stateDir, "pi-profiles.json"))),
     piModel: readEnv("AGENT_WORKERS_PI_MODEL")?.trim() || "",
     piThinking: readEnv("AGENT_WORKERS_PI_THINKING")?.trim() || "",
     piAgentDir: piAgentDir ? resolve3(expandHome(piAgentDir)) : "",
@@ -427,7 +545,7 @@ async function loadConfig() {
     useDshCredentials: boolEnv("AGENT_WORKERS_USE_DSH_CREDENTIALS"),
     credentialsFile: resolve3(
       expandHome(
-        readEnv("AGENT_WORKERS_CREDENTIALS_FILE") ?? join3(homedir2(), ".dsh", ".credentials.yaml")
+        readEnv("AGENT_WORKERS_CREDENTIALS_FILE") ?? join4(homedir2(), ".dsh", ".credentials.yaml")
       )
     ),
     envAllow: [...new Set(envAllow)],
@@ -441,8 +559,8 @@ async function loadConfig() {
 }
 
 // src/dashboard.ts
-import { readdir as readdir2, readFile as readFile3, stat as stat4 } from "node:fs/promises";
-import { join as join4 } from "node:path";
+import { readdir as readdir3, readFile as readFile5, stat as stat4 } from "node:fs/promises";
+import { join as join5 } from "node:path";
 var ALERT_KINDS = /* @__PURE__ */ new Set(["stalled", "loop", "tool_errors", "budget"]);
 function normalizeAlerts(value) {
   if (!Array.isArray(value)) return [];
@@ -468,20 +586,20 @@ function validId(id) {
   return /^[A-Za-z0-9_-]+$/.test(id);
 }
 async function listDashboardJobs(stateDir) {
-  const root = join4(stateDir, "jobs");
+  const root = join5(stateDir, "jobs");
   let entries;
   try {
-    entries = await readdir2(root, { withFileTypes: true });
+    entries = await readdir3(root, { withFileTypes: true });
   } catch {
     return [];
   }
   const jobs = [];
   for (const entry2 of entries) {
     if (!entry2.isDirectory() || !validId(entry2.name)) continue;
-    const dir = join4(root, entry2.name);
+    const dir = join5(root, entry2.name);
     let saved;
     try {
-      saved = JSON.parse(await readFile3(join4(dir, "job.json"), "utf8"));
+      saved = JSON.parse(await readFile5(join5(dir, "job.json"), "utf8"));
     } catch {
       continue;
     }
@@ -494,7 +612,7 @@ async function listDashboardJobs(stateDir) {
     const endMs = isActive(status) ? Date.now() : Date.parse(finishedAt ?? createdAt);
     let lastEventAt;
     try {
-      lastEventAt = (await stat4(join4(dir, "events.ndjson"))).mtime.toISOString();
+      lastEventAt = (await stat4(join5(dir, "events.ndjson"))).mtime.toISOString();
     } catch {
       lastEventAt = void 0;
     }
@@ -545,7 +663,7 @@ async function listDashboardJobs(stateDir) {
 }
 
 // src/events.ts
-import { readFile as readFile4 } from "node:fs/promises";
+import { readFile as readFile6 } from "node:fs/promises";
 var DEFAULT_LIMIT = 200;
 var MAX_LIMIT = 500;
 var MAX_RETURNED_EVENT_CHARS = 12e3;
@@ -594,7 +712,7 @@ function parseEvent(line, cursor) {
 async function readEventPage(eventsPath, cursor = 0, limit) {
   let text;
   try {
-    text = await readFile4(eventsPath, "utf8");
+    text = await readFile6(eventsPath, "utf8");
   } catch (err) {
     if (err.code === "ENOENT") {
       return { events: [], next_cursor: 0, total_events: 0, has_more: false };
@@ -772,7 +890,7 @@ async function streamDashboard(req, res, stateDir, retentionDays, url) {
       });
       if (jobId !== null) {
         const page = await readEventPage(
-          join5(stateDir, "jobs", jobId, "events.ndjson"),
+          join6(stateDir, "jobs", jobId, "events.ndjson"),
           cursor,
           500
         );
@@ -795,7 +913,7 @@ async function streamDashboard(req, res, stateDir, retentionDays, url) {
 }
 function createDashboardServer(stateDir, options = {}) {
   const retentionDays = options.retentionDays ?? 0;
-  const worktreeRoot = options.worktreeRoot ?? join5(stateDir, "worktrees");
+  const worktreeRoot = options.worktreeRoot ?? join6(stateDir, "worktrees");
   const server = createServer((req, res) => {
     void (async () => {
       try {
@@ -830,7 +948,7 @@ function createDashboardServer(stateDir, options = {}) {
           return;
         }
         if (url.pathname === "/") {
-          const html = await readFile5(DASHBOARD_HTML, "utf8");
+          const html = await readFile7(DASHBOARD_HTML, "utf8");
           res.writeHead(200, {
             "Content-Type": "text/html; charset=utf-8",
             "Cache-Control": "no-store",
@@ -882,7 +1000,7 @@ function createDashboardServer(stateDir, options = {}) {
           }
           writeJson(res, 200, {
             job_id: jobId,
-            ...await readEventPage(join5(stateDir, "jobs", jobId, "events.ndjson"), cursor, limit)
+            ...await readEventPage(join6(stateDir, "jobs", jobId, "events.ndjson"), cursor, limit)
           });
           return;
         }
