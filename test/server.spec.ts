@@ -116,7 +116,12 @@ describe('MCP server', () => {
     await writeFile(fake, fakeDsh, { mode: 0o700 });
     await chmod(fake, 0o700);
     for (const profile of ['work-openrouter', 'personal-deepseek', 'personal-opencode']) {
-      await mkdir(join(root, 'dsh-home', 'profiles', profile), { recursive: true });
+      const dir = join(root, 'dsh-home', 'profiles', profile);
+      await mkdir(dir, { recursive: true });
+      await writeFile(
+        join(dir, 'metadata.json'),
+        JSON.stringify({ provider: 'openrouter', model: 'test-model' }),
+      );
     }
     child = spawn(process.execPath, [serverPath], {
       cwd: repo,
@@ -199,6 +204,17 @@ describe('MCP server', () => {
       'worker_wait',
     ]);
 
+    const start = listed.find((tool) => tool.name === 'worker_start');
+    expect(start?.inputSchema?.required).not.toContain('effort');
+    expect(start?.inputSchema?.properties?.effort).toMatchObject({
+      enum: ['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'],
+    });
+    const invalid = await rpc.request('tools/call', {
+      name: 'worker_start',
+      arguments: { task: 'invalid effort', effort: 'ultra' },
+    });
+    expect(invalid.result?.isError).toBe(true);
+
     const steer = listed.find((tool) => tool.name === 'worker_steer');
     expect(steer?.inputSchema?.required).toEqual(expect.arrayContaining(['job_id', 'message']));
     expect(Object.keys(steer?.inputSchema?.properties ?? {}).sort()).toEqual([
@@ -227,11 +243,13 @@ describe('MCP server', () => {
     const startPayload = toolPayload(started) as {
       job_id: string;
       profile: string;
+      effort: string;
       group_id: string;
       group_name: string;
     };
     expect(startPayload.job_id).toMatch(/^j_/);
     expect(startPayload.profile).toBe('work-openrouter');
+    expect(startPayload.effort).toBe('max');
     expect(startPayload.group_id).toBe('g_test');
     expect(startPayload.group_name).toBe('Test group');
 

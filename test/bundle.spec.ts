@@ -85,7 +85,12 @@ describe('committed plugin bundle', () => {
     await writeFile(fake, fakeDsh, { mode: 0o700 });
     await chmod(fake, 0o700);
     for (const profile of ['work-openrouter', 'personal-deepseek', 'personal-opencode']) {
-      await mkdir(join(root, 'dsh-home', 'profiles', profile), { recursive: true });
+      const dir = join(root, 'dsh-home', 'profiles', profile);
+      await mkdir(dir, { recursive: true });
+      await writeFile(
+        join(dir, 'metadata.json'),
+        JSON.stringify({ provider: 'openrouter', model: 'test-model' }),
+      );
     }
     child = spawn(process.execPath, [serverPath], {
       cwd: repo,

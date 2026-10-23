@@ -1,8 +1,9 @@
-import { readdir, readFile } from 'node:fs/promises';
+import { mkdir, readdir, readFile, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 
 import type { Config } from '../config.js';
 import { resolveApiKey, resolveOpenCodeGoApiKey, resolveOpenRouterChatApiKey } from '../config.js';
+import { validateEffort } from '../effort.js';
 import { JobError } from '../errors.js';
 import { NdjsonFold } from '../ndjson.js';
 import { runCapture } from '../proc.js';
@@ -112,7 +113,34 @@ export class DshEngine implements Engine {
   }
 
   async launch(spec: EngineLaunchSpec, _task: string): Promise<EngineLaunchPlan> {
-    const args = ['--profile', spec.profile, '--json'];
+    const args = ['--profile', spec.profile];
+    if (spec.effort !== undefined) {
+      const effort = validateEffort(spec.effort);
+      if (!spec.provider?.trim() || !spec.model?.trim()) {
+        throw new JobError(
+          'invalid_profile_metadata',
+          `dsh effort requires provider and model in profiles/${spec.profile}/metadata.json; keep metadata aligned with agent-default-model`,
+        );
+      }
+      // Cordis patches replace the entire config, not individual keys. Carry
+      // the resolved route forward; never modify the shared profile. JSON is
+      // also a valid YAML patch list and avoids interpolation/quoting hazards.
+      await mkdir(spec.sessionDir, { recursive: true, mode: 0o700 });
+      const patchPath = join(spec.sessionDir, `${spec.jobId}-effort.patch.json`);
+      await writeFile(
+        patchPath,
+        JSON.stringify([
+          {
+            id: 'agent-default-model',
+            name: '@deepseek-ai/dsh-agent-default-model',
+            config: { provider: spec.provider, model: spec.model, reasoningEffort: effort },
+          },
+        ]),
+        { mode: 0o600 },
+      );
+      args.push('--patch', patchPath);
+    }
+    args.push('--json');
     if (spec.sessionId) args.push('--session-id', spec.sessionId);
     return {
       command: this.config.dshBin,

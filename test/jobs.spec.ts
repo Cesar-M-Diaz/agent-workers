@@ -160,6 +160,54 @@ describe('JobManager', () => {
     expect(result.final).toBe('OK first');
   });
 
+  it('defaults omitted effort to max and applies a per-job overlay without touching profiles', async () => {
+    const before = await readFile(
+      join(config.dshHome, 'profiles', 'work-openrouter', 'metadata.json'),
+      'utf8',
+    );
+    const started = await manager.start({ task: 'PROFILE' });
+    expect(started.effort).toBe('max');
+    const waited = await manager.wait([started.job_id], 'all', 10_000);
+    expect(waited.jobs[0]?.effort).toBe('max');
+    expect((await manager.statusOutput([started.job_id])).jobs[0]?.effort).toBe('max');
+    expect((await manager.result(started.job_id, 1000, new Set(['final']))).effort).toBe('max');
+    const argv = JSON.parse(await readFile(join(repo, 'worker-argv.json'), 'utf8')) as string[];
+    const patch = JSON.parse(await readFile(argv[argv.indexOf('--patch') + 1] as string, 'utf8'));
+    expect(patch[0].config).toEqual({
+      provider: 'openrouter',
+      model: '~deepseek/deepseek-flash-latest',
+      reasoningEffort: 'max',
+    });
+    const saved = JSON.parse(
+      await readFile(join(config.stateDir, 'jobs', started.job_id, 'job.json'), 'utf8'),
+    );
+    expect(saved.effort).toBe('max');
+    expect(
+      await readFile(join(config.dshHome, 'profiles', 'work-openrouter', 'metadata.json'), 'utf8'),
+    ).toBe(before);
+  });
+
+  it.each(['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'])(
+    'applies explicit %s effort',
+    async (effort) => {
+      const started = await manager.start({ task: 'PROFILE', effort });
+      const waited = await manager.wait([started.job_id], 'all', 10_000);
+      expect(waited.jobs[0]?.effort).toBe(effort);
+      const argv = JSON.parse(await readFile(join(repo, 'worker-argv.json'), 'utf8')) as string[];
+      const patch = JSON.parse(await readFile(argv[argv.indexOf('--patch') + 1] as string, 'utf8'));
+      expect(patch[0].config.reasoningEffort).toBe(effort);
+    },
+  );
+
+  it('rejects unsupported effort before queueing a worker', async () => {
+    await expect(manager.start({ task: 'x', effort: 'ultra' })).rejects.toMatchObject({
+      code: 'invalid_effort',
+    });
+    await expect(manager.start({ task: 'x', effort: '' })).rejects.toMatchObject({
+      code: 'invalid_effort',
+    });
+  });
+
   it('writes job.json atomically, leaving no temporary files', async () => {
     const started = await manager.start({ task: 'atomic', access: 'read-only' });
     await manager.wait([started.job_id], 'all', 10_000);
@@ -332,6 +380,7 @@ describe('JobManager', () => {
     const original = await manager.start({
       task: 'HANG',
       label: 'steer-me',
+      effort: 'medium',
       access: 'read-only',
       group_id: 'g_steer',
       group_name: 'Steer group',
@@ -371,6 +420,9 @@ describe('JobManager', () => {
     const saved = JSON.parse(
       await readFile(join(config.stateDir, 'jobs', steeredJobId, 'job.json'), 'utf8'),
     ) as Record<string, unknown>;
+    expect(saved.effort).toBe('medium');
+    const patch = JSON.parse(await readFile(argv[argv.indexOf('--patch') + 1] as string, 'utf8'));
+    expect(patch[0].config.reasoningEffort).toBe('medium');
     expect(saved.steeredFrom).toBe(original.job_id);
     expect(saved.resumeOf).toBe(original.job_id);
     expect(saved.label).toBe('steer-me ↻');
@@ -479,5 +531,54 @@ describe('JobManager', () => {
     const loop = waited.jobs[0]?.alerts.find((alert) => alert.kind === 'loop');
     expect(loop?.message).toContain('same bash call repeated 5×');
     await manager.cancel(started.job_id);
+  });
+
+  it('reloads saved effort/cost and resumes legacy unknown effort honestly', async () => {
+    const current = await manager.start({ task: 'PROFILE', effort: 'high' });
+    await manager.wait([current.job_id], 'all', 10_000);
+    const legacy = await manager.start({ task: 'legacy' });
+    await manager.wait([legacy.job_id], 'all', 10_000);
+    await manager.shutdown();
+    const currentPath = join(config.stateDir, 'jobs', current.job_id, 'job.json');
+    const currentSaved = JSON.parse(await readFile(currentPath, 'utf8'));
+    currentSaved.costUsd = 0.37;
+    await writeFile(currentPath, JSON.stringify(currentSaved));
+    const legacyPath = join(config.stateDir, 'jobs', legacy.job_id, 'job.json');
+    const legacySaved = JSON.parse(await readFile(legacyPath, 'utf8'));
+    delete legacySaved.effort;
+    await writeFile(legacyPath, JSON.stringify(legacySaved));
+    manager = new JobManager(config);
+    await manager.init();
+    const restored = await manager.statusOutput([current.job_id, legacy.job_id]);
+    expect(restored.jobs[0]).toMatchObject({ effort: 'high', cost_usd: 0.37 });
+    expect(restored.jobs[1]?.effort).toBeUndefined();
+    const resumed = await manager.start({ task: 'PROFILE', resume_job_id: current.job_id });
+    expect(resumed.effort).toBe('high');
+    await manager.wait([resumed.job_id], 'all', 10_000);
+    let argv = JSON.parse(await readFile(join(repo, 'worker-argv.json'), 'utf8')) as string[];
+    expect(
+      JSON.parse(await readFile(argv[argv.indexOf('--patch') + 1] as string, 'utf8'))[0].config
+        .reasoningEffort,
+    ).toBe('high');
+    const unknown = await manager.start({ task: 'PROFILE', resume_job_id: legacy.job_id });
+    expect(unknown.effort).toBeUndefined();
+    await manager.wait([unknown.job_id], 'all', 10_000);
+    argv = JSON.parse(await readFile(join(repo, 'worker-argv.json'), 'utf8')) as string[];
+    expect(argv).not.toContain('--patch');
+    const explicit = await manager.start({
+      task: 'PROFILE',
+      resume_job_id: legacy.job_id,
+      effort: 'low',
+    });
+    expect(explicit.effort).toBe('low');
+    await manager.wait([explicit.job_id], 'all', 10_000);
+    const explicitArgv = JSON.parse(
+      await readFile(join(repo, 'worker-argv.json'), 'utf8'),
+    ) as string[];
+    expect(
+      JSON.parse(
+        await readFile(explicitArgv[explicitArgv.indexOf('--patch') + 1] as string, 'utf8'),
+      )[0].config.reasoningEffort,
+    ).toBe('low');
   });
 });

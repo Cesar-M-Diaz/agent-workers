@@ -580,6 +580,7 @@
           button.append(top);
 
           const sub = el('div', 'job-sub');
+          sub.append(el('span', '', `effort ${job.effort || 'n/a'}`));
           sub.append(el('span', '', job.steps + ' steps'));
           sub.append(el('span', '', job.tool_calls + ' tools'));
           if (typeof job.cost_usd === 'number') {
@@ -631,6 +632,7 @@
       $('job-meta').replaceChildren();
       addMeta('cwd', job.cwd, job.cwd);
       addMeta('elapsed', formatElapsed(job.elapsed_s));
+      addMeta('effort', job.effort || 'n/a');
       addMeta('steps', String(job.steps));
       addMeta('tools', String(job.tool_calls));
       if (job.last_tool) addMeta('last tool', job.last_tool);

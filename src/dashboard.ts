@@ -24,6 +24,7 @@ interface PersistedJobFile {
   profile?: string;
   provider?: string;
   model?: string;
+  effort?: string;
   costUsd?: number;
   createdAt?: string;
   startedAt?: string;
@@ -59,6 +60,7 @@ export interface DashboardJob {
   profile?: string;
   provider?: string;
   model?: string;
+  effort?: string;
   cost_usd?: number;
   created_at: string;
   started_at?: string;
@@ -183,6 +185,7 @@ export async function listDashboardJobs(stateDir: string): Promise<DashboardJob[
       ...(typeof saved.profile === 'string' ? { profile: saved.profile } : {}),
       ...(typeof saved.provider === 'string' ? { provider: saved.provider } : {}),
       ...(typeof saved.model === 'string' ? { model: saved.model } : {}),
+      ...(typeof saved.effort === 'string' && saved.effort.trim() ? { effort: saved.effort } : {}),
       ...(typeof saved.costUsd === 'number' ? { cost_usd: saved.costUsd } : {}),
       created_at: createdAt,
       ...(startedAt ? { started_at: startedAt } : {}),

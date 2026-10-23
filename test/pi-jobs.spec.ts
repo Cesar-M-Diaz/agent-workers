@@ -78,6 +78,7 @@ describe('JobManager pi backend', () => {
     });
     expect(started.backend).toBe('pi');
     expect(started.profile).toBe('default');
+    expect(started.effort).toBe('max');
 
     const waited = await manager.wait([started.job_id], 'all', 10_000);
     expect(waited.jobs[0]?.status).toBe('succeeded');
@@ -96,7 +97,7 @@ describe('JobManager pi backend', () => {
         '--model',
         'openrouter/deepseek/deepseek-v4.1-flash-1017',
         '--thinking',
-        'low',
+        'max',
         '--no-mcp',
         '--tools',
         'read,grep,find,ls',
@@ -110,6 +111,7 @@ describe('JobManager pi backend', () => {
     ) as Record<string, unknown>;
     expect(saved.schemaVersion).toBe(1);
     expect(saved.backend).toBe('pi');
+    expect(saved.effort).toBe('max');
     expect(saved.costUsd).toBeCloseTo(0.0005, 8);
 
     const events = (
@@ -124,7 +126,7 @@ describe('JobManager pi backend', () => {
   });
 
   it('resumes and steers a pi job in the original session directory', async () => {
-    const started = await manager.start({ task: 'first', access: 'read-only' });
+    const started = await manager.start({ task: 'first', access: 'read-only', effort: 'low' });
     await manager.wait([started.job_id], 'all', 10_000);
 
     const steered = (await manager.steer({
@@ -137,6 +139,8 @@ describe('JobManager pi backend', () => {
     expect(waited.jobs[0]?.status).toBe('succeeded');
 
     const argv = JSON.parse(await readFile(argvFile, 'utf8')) as string[];
+    expect(argv[argv.indexOf('--thinking') + 1]).toBe('low');
+    expect(waited.jobs[0]?.effort).toBe('low');
     expect(argv).toContain('--session-id');
     expect(argv).toContain('fixture-session');
     const dirIndex = argv.indexOf('--session-dir');
@@ -149,6 +153,54 @@ describe('JobManager pi backend', () => {
       await readFile(join(config.stateDir, 'jobs', steeredId, 'job.json'), 'utf8'),
     ) as Record<string, unknown>;
     expect(saved.sessionDir).toBe(join(config.stateDir, 'jobs', started.job_id));
+  });
+
+  it('defaults every profile to max unless canonical effort explicitly overrides it', async () => {
+    for (const [profile, effort, expected] of [
+      ['openrouter/example/model:low', undefined, 'max'],
+      ['openrouter/example/model:high', 'low', 'low'],
+      ['openrouter/example/model:low', 'high', 'high'],
+      ['openrouter/example/model', undefined, 'max'],
+      ['default', 'off', 'off'],
+    ] as const) {
+      const started = await manager.start({ task: 'profile effort', profile, effort });
+      expect(started.effort).toBe(expected);
+      const waited = await manager.wait([started.job_id], 'all', 10_000);
+      expect(waited.jobs[0]?.effort).toBe(expected);
+      const argv = JSON.parse(await readFile(argvFile, 'utf8')) as string[];
+      expect(argv[argv.indexOf('--thinking') + 1]).toBe(expected);
+    }
+  });
+
+  it('ignores named profile thinking and validates only canonical effort', async () => {
+    await writeFile(
+      config.piProfilesFile as string,
+      JSON.stringify({
+        named: { provider: 'openrouter', model: 'example/model', thinking: 'high' },
+        bad: { provider: 'openrouter', model: 'example/model', thinking: 'ultra' },
+      }),
+    );
+    const named = new JobManager({ ...config, stateDir: join(root, 'named-state') });
+    await named.init();
+    try {
+      for (const [effort, expected] of [
+        [undefined, 'max'],
+        ['low', 'low'],
+      ] as const) {
+        const started = await named.start({ task: 'named effort', profile: 'named', effort });
+        const waited = await named.wait([started.job_id], 'all', 10_000);
+        expect(waited.jobs[0]?.effort).toBe(expected);
+        const argv = JSON.parse(await readFile(argvFile, 'utf8')) as string[];
+        expect(argv[argv.indexOf('--thinking') + 1]).toBe(expected);
+      }
+      await expect(
+        named.start({ task: 'bad', profile: 'bad', effort: 'ultra' }),
+      ).rejects.toMatchObject({
+        code: 'invalid_effort',
+      });
+    } finally {
+      await named.shutdown();
+    }
   });
 
   it('refuses to resume when the shared session directory was deleted', async () => {

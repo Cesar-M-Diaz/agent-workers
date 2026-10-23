@@ -8,6 +8,7 @@ import { loadConfig } from './config.js';
 import type { ControlServer } from './control/server.js';
 import { startControlServer } from './control/server.js';
 import { createControlService } from './control/service.js';
+import { EFFORT_LEVELS } from './effort.js';
 import { JobError, JobManager } from './jobs.js';
 import { VERSION } from './version.js';
 
@@ -116,6 +117,12 @@ async function main(): Promise<void> {
           .optional()
           .describe(
             'Backend profile for this job: a dsh profile name, a pi model pattern, or a named pi profile. Defaults to the active profile.',
+          ),
+        effort: z
+          .enum(EFFORT_LEVELS)
+          .optional()
+          .describe(
+            'Reasoning effort. Every new job defaults to max when omitted, overriding profile/config thinking. Resumes retain their saved effort when omitted.',
           ),
         group_id: z
           .string()

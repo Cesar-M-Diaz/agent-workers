@@ -99,6 +99,7 @@ export type DshJob = {
   profile?: string
   provider?: string
   model?: string
+  effort?: string
   alerts: DshAlert[]
 }
 

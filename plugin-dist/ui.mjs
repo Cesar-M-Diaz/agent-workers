@@ -638,6 +638,7 @@ async function listDashboardJobs(stateDir) {
       ...typeof saved.profile === "string" ? { profile: saved.profile } : {},
       ...typeof saved.provider === "string" ? { provider: saved.provider } : {},
       ...typeof saved.model === "string" ? { model: saved.model } : {},
+      ...typeof saved.effort === "string" && saved.effort.trim() ? { effort: saved.effort } : {},
       ...typeof saved.costUsd === "number" ? { cost_usd: saved.costUsd } : {},
       created_at: createdAt,
       ...startedAt ? { started_at: startedAt } : {},
@@ -735,7 +736,7 @@ async function readEventPage(eventsPath, cursor = 0, limit) {
 }
 
 // src/version.ts
-var VERSION = "0.5.0";
+var VERSION = "0.6.0";
 
 // src/ui.ts
 var HOST = "127.0.0.1";

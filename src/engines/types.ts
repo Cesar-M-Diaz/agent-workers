@@ -9,6 +9,8 @@ export interface EngineLaunchSpec {
   profile: string;
   provider?: string;
   model?: string;
+  /** Resolved effort; absent only when resuming a legacy job with unknown effort. */
+  effort?: string;
   access: AccessMode;
   sessionId?: string;
   /** Directory owned by the job; engines may keep session files under it. */

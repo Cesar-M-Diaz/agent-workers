@@ -215,6 +215,7 @@ export function normalizeJob(
     'profile',
     'provider',
     'model',
+    'effort',
   ] as const
   for (const field of stringFields) {
     const found = nonEmptyText(value[field])
@@ -721,13 +722,14 @@ export function formatTokens(value: number): string {
 }
 
 /**
- * The collapsed meta line: `model · duration · $cost · N steps · N tools`.
- * Every missing value is skipped; an empty string means show no meta line.
+ * The collapsed meta line: `model · effort · duration · $cost · N steps · N tools`.
+ * Unknown effort reads n/a; other missing values are skipped.
  */
 export function jobMetaLine(
   job: Pick<
     DshJob,
     | 'model'
+    | 'effort'
     | 'status'
     | 'createdAt'
     | 'startedAt'
@@ -740,6 +742,7 @@ export function jobMetaLine(
 ): string {
   const parts: string[] = []
   if (job.model !== undefined) parts.push(job.model)
+  parts.push(`effort ${job.effort ?? 'n/a'}`)
   const elapsed = elapsedMs(job, nowMs)
   if (elapsed !== undefined) parts.push(formatDuration(elapsed))
   const cost = formatCost(job.costUsd)
@@ -846,11 +849,11 @@ export function newestJob<T extends Pick<DshJob, 'createdAt'>>(
   return newest
 }
 
-/** `profile-or-provider · model`, or one of them when only one exists. */
+/** Effort comes first so long profile/model names cannot hide it in the header. */
 export function jobIdentity(
-  job: Pick<DshJob, 'profile' | 'provider' | 'model'>,
+  job: Pick<DshJob, 'profile' | 'provider' | 'model' | 'effort'>,
 ): string | undefined {
-  const parts: string[] = []
+  const parts: string[] = [`effort ${job.effort ?? 'n/a'}`]
   const server = job.profile ?? job.provider
   if (server !== undefined) parts.push(server)
   if (job.model !== undefined) parts.push(job.model)

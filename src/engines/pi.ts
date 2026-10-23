@@ -2,6 +2,7 @@ import { readdir, readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 
 import type { Config } from '../config.js';
+import { EFFORT_LEVELS, validateEffort } from '../effort.js';
 import { JobError } from '../errors.js';
 import { runCapture } from '../proc.js';
 import { PiFold } from './pi-fold.js';
@@ -19,7 +20,7 @@ interface PiProfile {
   thinking?: string;
 }
 
-const THINKING_LEVELS = new Set(['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max']);
+const THINKING_LEVELS = new Set<string>(EFFORT_LEVELS);
 
 function parseModel(value: string): EngineProfileMetadata {
   let text = value.trim();
@@ -124,15 +125,9 @@ export class PiEngine implements Engine {
       metadata.provider && metadata.model
         ? `${metadata.provider}/${metadata.model}`
         : metadata.model;
-    const thinking =
-      metadata.thinking ??
-      (spec.profile === 'default' ? this.config.piThinking?.trim() : undefined);
-    if (thinking && !THINKING_LEVELS.has(thinking)) {
-      throw new JobError(
-        'unknown_profile',
-        `invalid pi thinking level ${thinking}; expected off, minimal, low, medium, high, xhigh or max`,
-      );
-    }
+    // The manager resolves new-job defaults once. An absent effort means a
+    // legacy resume: leave the session selection alone instead of inventing max.
+    const thinking = spec.effort === undefined ? undefined : validateEffort(spec.effort);
 
     const args = ['--mode', 'json'];
     if (modelArg) args.push('--model', modelArg);

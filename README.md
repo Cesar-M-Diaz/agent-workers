@@ -140,7 +140,7 @@ provides the same server, and enabling both duplicates every tool.
 | `max_concurrent` | `AGENT_WORKERS_MAX_CONCURRENT` | `3` | Hard maximum 8. |
 | `profile` | `AGENT_WORKERS_PROFILE` | `work-openrouter` (dsh) or `default` (pi) | dsh profile name, pi model pattern, or named pi profile. |
 | `pi_model` | `AGENT_WORKERS_PI_MODEL` | empty → pi's configured model | Model for the `default` pi profile. |
-| `pi_thinking` | `AGENT_WORKERS_PI_THINKING` | empty → pi's configured level | off, minimal, low, medium, high, xhigh or max. |
+| `pi_thinking` | `AGENT_WORKERS_PI_THINKING` | empty | Legacy setting; new jobs use canonical `effort` (default `max`) instead. |
 | `pi_agent_dir` | `AGENT_WORKERS_PI_AGENT_DIR` | empty → user's pi config | Dedicated `PI_CODING_AGENT_DIR` for workers. |
 | `pi_profiles_file` | `AGENT_WORKERS_PI_PROFILES_FILE` | `<state_dir>/pi-profiles.json` | Named pi profiles. |
 | `pi_allow_write` | `AGENT_WORKERS_PI_ALLOW_WRITE` | `false` | Allow `workspace-write` for pi; use only with worktree isolation. |
@@ -277,13 +277,15 @@ by any session show up without an MCP round trip.
   example `◌ 2 running · ○ 1 queued · ✓ 5 · ✗ 1`; zero segments are omitted and
   an empty list reads `idle`. A dim third line totals the visible rows' cost
   and tokens and names the newest job's profile/model, for example
-  `$0.42 · 1.2M tok · personal-deepseek · deepseek-flash`.
+  `$0.42 · 1.2M tok · effort max · personal-deepseek · deepseek-flash`. Effort
+  precedes the profile/model so long identities do not hide it at normal widths.
 - **Job cards:** one round-bordered card per job, sorted active first and then
   newest `createdAt`. At most 30 terminal jobs are shown; active jobs are never
   cut. The border and badge follow the status; terminal cards other than
   failures are drawn with a dim border so running and failed work stands out.
 - **Collapsed:** `▶/▼ label` on the left and a status badge on the right, then
-  `model · 3m12s · $0.09 · 12 steps · 18 tools` (missing pieces omitted). A
+  `model · effort max · 3m12s · $0.09 · 12 steps · 18 tools` (unknown effort
+  reads `effort n/a`; other missing pieces are omitted). A
   running card adds its latest activity and freshness, for example
   `◌ bash · pnpm test · 3s ago`; after 90 seconds without an event it shows
   `⚠ no events for 2m` in the warning color. Current MCP watchdog alerts are
@@ -471,8 +473,8 @@ keep it in sync with `cordis.patch.yml` when changing the model.
 
 pi has no profile directories. A pi profile is one of:
 
-- `default`: use pi's configured model, optionally overridden by `pi_model`
-  and `pi_thinking`;
+- `default`: use pi's configured model, optionally overridden by `pi_model`;
+  new jobs use `max` effort (not the model suffix or `pi_thinking`);
 - a model pattern: `provider/model` with an optional `:<thinking>` suffix, for
   example `openrouter/deepseek/deepseek-v4.1-flash-1017:low`;
 - a named entry in `pi_profiles_file` (`<state_dir>/pi-profiles.json`):
@@ -491,6 +493,42 @@ The server resolves pi profiles with the pi backend; a dsh profile name is not
 valid for pi (and vice versa). If the shared `profile` setting is a dsh name
 while `backend=pi`, the server falls back to `default` and logs
 `profile_fallback`.
+
+### Worker effort
+
+`worker_start` accepts optional `effort`: `off`, `minimal`, `low`, `medium`,
+`high`, `xhigh`, or `max`. Unsupported values fail with `invalid_effort`; the
+worker manager never silently clamps them. These are CLI selections, not a
+guarantee that every provider/model offers every level: backend/provider
+capability checks and errors still apply.
+
+Precedence is resolved once, before a new job is queued:
+
+1. An explicit canonical `effort` wins over every profile/config thinking setting.
+2. Otherwise **every new job uses `max`**, for every DSH and Pi profile. Pi
+   `:level` suffixes, named profile `thinking`, `pi_model` thinking suffixes,
+   and `pi_thinking` / `AGENT_WORKERS_PI_THINKING` never lower this default.
+   Recognized thinking suffixes are stripped from Pi model identity; model tags
+   such as `:free` remain part of the model name. To request lower effort, pass
+   `effort` explicitly to `worker_start`.
+
+The resolved optional JSON field is `effort?: string` in `job.json`, start,
+status, wait and result summaries, and dashboard data. Claude pane cards and
+header summaries show it; legacy records show `effort n/a`, never an invented
+`max`. Resume/steer reuse the persisted effort, not current profile defaults.
+An explicit `effort` on `worker_start` with `resume_job_id` may override it.
+Legacy resumes with no recorded effort omit the override and keep reporting
+unknown unless the caller explicitly selects a level.
+
+Pi receives `--thinking <effort>`. DSH receives a private per-job JSON `--patch`
+overlay targeting `agent-default-model` with `reasoningEffort`. Cordis replaces
+the whole row config, so the overlay also carries the job's resolved provider
+and model. No shared profile is edited. DSH profiles **must** have nonempty
+`provider` and `model` in `metadata.json`, matching the effective profile's
+`agent-default-model` config (including any home-level overrides). Missing
+routing metadata fails the launch with `invalid_profile_metadata`, rather
+than silently changing the route. Each resume gets its own overlay file while
+reusing the original session directory.
 
 ## Claude skill
 
@@ -574,7 +612,7 @@ DSH home, patches, or unrestricted permissions.
 | `AGENT_WORKERS_DSH_HOME` | `<state>/dsh-home` | Shared DSH profile and session store. |
 | `AGENT_WORKERS_PROFILE` | `work-openrouter` (dsh) or `default` (pi) | dsh profile, pi model pattern, or named pi profile. |
 | `AGENT_WORKERS_PI_MODEL` | unset | Model for the pi `default` profile. |
-| `AGENT_WORKERS_PI_THINKING` | unset | Thinking level for the pi `default` profile. |
+| `AGENT_WORKERS_PI_THINKING` | unset | Legacy setting; new jobs use canonical `effort` (default `max`) instead. |
 | `AGENT_WORKERS_PI_AGENT_DIR` | unset | `PI_CODING_AGENT_DIR` for pi workers. |
 | `AGENT_WORKERS_PI_PROFILES_FILE` | `<state>/pi-profiles.json` | Named pi profiles. |
 | `AGENT_WORKERS_PI_ALLOW_WRITE` | off | Allow pi `workspace-write`; use only with worktree isolation. |

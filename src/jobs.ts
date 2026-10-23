@@ -24,6 +24,7 @@ import {
   removeDescriptor,
   writeDescriptor,
 } from './control/descriptor.js';
+import { validateEffort } from './effort.js';
 import { createEngines } from './engines/index.js';
 import type { Engine, EngineId, Fold } from './engines/types.js';
 import { JobError } from './errors.js';
@@ -83,6 +84,7 @@ interface Job {
   profile: string;
   provider?: string;
   model?: string;
+  effort?: string;
   cwd: string;
   access: AccessMode;
   isolation: Isolation;
@@ -143,6 +145,7 @@ interface PersistedJob {
   profile?: string;
   provider?: string;
   model?: string;
+  effort?: string;
   costUsd?: number;
   access: AccessMode;
   isolation: Isolation;
@@ -205,6 +208,7 @@ function persisted(job: Job): PersistedJob {
     profile: job.profile,
     provider: job.provider,
     model: job.model,
+    effort: job.effort,
     costUsd: costOf(job),
     access: job.access,
     isolation: job.isolation,
@@ -253,7 +257,7 @@ function fromPersisted(saved: PersistedJob, engine: Engine): Job {
   fold.state.lastTool = saved.lastTool;
   fold.state.turnEndKind = saved.turnEndKind;
   fold.state.usage = saved.usage;
-  if (backend === 'pi') fold.state.costUsd = saved.costUsd;
+  fold.state.costUsd = saved.costUsd;
   return {
     id: saved.id,
     label: saved.label,
@@ -266,6 +270,7 @@ function fromPersisted(saved: PersistedJob, engine: Engine): Job {
     profile: saved.profile ?? 'work-openrouter',
     provider: saved.provider,
     model: saved.model,
+    effort: saved.effort,
     access: saved.access,
     isolation: saved.isolation,
     timeoutMs: saved.timeoutMs,
@@ -620,6 +625,8 @@ export class JobManager {
     let profile: string;
     let provider: string | undefined;
     let model: string | undefined;
+    let effort: string | undefined;
+    const requestedEffort = input.effort === undefined ? undefined : validateEffort(input.effort);
     let cwd: string;
     let access: AccessMode;
     let isolation: Isolation;
@@ -666,6 +673,7 @@ export class JobManager {
       profile = await engine.resolveProfile(original.profile);
       provider = original.provider;
       model = original.model;
+      effort = requestedEffort ?? original.effort;
       if (!provider || !model) {
         const metadata = await engine.readProfileMetadata(profile);
         provider ??= metadata.provider;
@@ -725,6 +733,7 @@ export class JobManager {
       const metadata = await engine.readProfileMetadata(profile);
       provider = metadata.provider;
       model = metadata.model;
+      effort = requestedEffort ?? 'max';
       cwd = await this.resolveCwd(input.cwd);
       access = input.access ?? 'read-only';
       this.assertBackendAccess(backend, access);
@@ -771,6 +780,7 @@ export class JobManager {
       profile,
       provider,
       model,
+      effort,
       cwd,
       access,
       isolation,
@@ -805,6 +815,7 @@ export class JobManager {
       backend: job.backend,
       provider: job.provider,
       model: job.model,
+      effort: job.effort,
       group_id: job.groupId,
       group_name: job.groupName,
       ...(job.status === 'queued' ? { queue_position: queuePosition } : {}),
@@ -870,6 +881,7 @@ export class JobManager {
         profile: job.profile,
         provider: job.provider,
         model: job.model,
+        effort: job.effort,
         access: job.access,
         sessionId: job.sessionId,
         sessionDir: job.sessionDir,
@@ -1286,6 +1298,7 @@ export class JobManager {
       backend: job.backend,
       provider: job.provider,
       model: job.model,
+      effort: job.effort,
       usage: job.fold.state.usage,
       cost_usd: costOf(job),
       final: final === undefined ? undefined : final.slice(0, maxChars),
@@ -1515,6 +1528,7 @@ export class JobManager {
       backend: job.backend,
       provider: job.provider,
       model: job.model,
+      effort: job.effort,
       group_id: job.groupId,
       group_name: job.groupName,
       owner_id: job.ownerId,

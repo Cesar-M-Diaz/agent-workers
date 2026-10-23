@@ -78,6 +78,7 @@ export interface JobSummary {
   backend: 'dsh' | 'pi';
   provider?: string;
   model?: string;
+  effort?: string;
   group_id: string;
   group_name: string;
   owner_id: string;
@@ -117,6 +118,7 @@ export interface StartInput {
   task: string;
   label?: string;
   profile?: string;
+  effort?: string;
   backend?: 'dsh' | 'pi';
   group_id?: string;
   group_name?: string;
@@ -137,6 +139,7 @@ export interface StartResult {
   backend: 'dsh' | 'pi';
   provider?: string;
   model?: string;
+  effort?: string;
   group_id: string;
   group_name: string;
   queue_position?: number;

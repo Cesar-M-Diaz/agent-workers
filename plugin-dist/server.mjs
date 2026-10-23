@@ -37807,7 +37807,7 @@ function closeServer(server) {
 }
 
 // src/version.ts
-var VERSION = "0.5.0";
+var VERSION = "0.6.0";
 
 // src/control/service.ts
 function assertJobId(jobId) {
@@ -37956,15 +37956,27 @@ function createControlService(manager) {
   };
 }
 
+// src/effort.ts
+var EFFORT_LEVELS = ["off", "minimal", "low", "medium", "high", "xhigh", "max"];
+function validateEffort(value) {
+  if (typeof value !== "string" || !EFFORT_LEVELS.includes(value)) {
+    throw new JobError(
+      "invalid_effort",
+      `invalid effort ${String(value)}; expected ${EFFORT_LEVELS.join(", ")}`
+    );
+  }
+  return value;
+}
+
 // src/jobs.ts
 import { randomUUID as randomUUID2 } from "node:crypto";
 import { createWriteStream } from "node:fs";
-import { access, mkdir as mkdir4, readdir as readdir5, readFile as readFile8, rename as rename2, rm as rm4, stat as stat4, writeFile as writeFile2 } from "node:fs/promises";
+import { access, mkdir as mkdir5, readdir as readdir5, readFile as readFile8, rename as rename2, rm as rm4, stat as stat4, writeFile as writeFile3 } from "node:fs/promises";
 import { basename, join as join7 } from "node:path";
 import { setTimeout as delay2 } from "node:timers/promises";
 
 // src/engines/dsh.ts
-import { readdir as readdir3, readFile as readFile5 } from "node:fs/promises";
+import { mkdir as mkdir4, readdir as readdir3, readFile as readFile5, writeFile as writeFile2 } from "node:fs/promises";
 import { join as join5 } from "node:path";
 
 // src/ndjson.ts
@@ -38206,7 +38218,31 @@ var DshEngine = class {
     return ready;
   }
   async launch(spec, _task) {
-    const args = ["--profile", spec.profile, "--json"];
+    const args = ["--profile", spec.profile];
+    if (spec.effort !== void 0) {
+      const effort = validateEffort(spec.effort);
+      if (!spec.provider?.trim() || !spec.model?.trim()) {
+        throw new JobError(
+          "invalid_profile_metadata",
+          `dsh effort requires provider and model in profiles/${spec.profile}/metadata.json; keep metadata aligned with agent-default-model`
+        );
+      }
+      await mkdir4(spec.sessionDir, { recursive: true, mode: 448 });
+      const patchPath = join5(spec.sessionDir, `${spec.jobId}-effort.patch.json`);
+      await writeFile2(
+        patchPath,
+        JSON.stringify([
+          {
+            id: "agent-default-model",
+            name: "@deepseek-ai/dsh-agent-default-model",
+            config: { provider: spec.provider, model: spec.model, reasoningEffort: effort }
+          }
+        ]),
+        { mode: 384 }
+      );
+      args.push("--patch", patchPath);
+    }
+    args.push("--json");
     if (spec.sessionId) args.push("--session-id", spec.sessionId);
     return {
       command: this.config.dshBin,
@@ -38498,7 +38534,7 @@ var PiFold = class {
 };
 
 // src/engines/pi.ts
-var THINKING_LEVELS = /* @__PURE__ */ new Set(["off", "minimal", "low", "medium", "high", "xhigh", "max"]);
+var THINKING_LEVELS = new Set(EFFORT_LEVELS);
 function parseModel(value) {
   let text = value.trim();
   let thinking;
@@ -38584,13 +38620,7 @@ var PiEngine = class {
   async launch(spec, _task) {
     const metadata = await this.readProfileMetadata(spec.profile);
     const modelArg = metadata.provider && metadata.model ? `${metadata.provider}/${metadata.model}` : metadata.model;
-    const thinking = metadata.thinking ?? (spec.profile === "default" ? this.config.piThinking?.trim() : void 0);
-    if (thinking && !THINKING_LEVELS.has(thinking)) {
-      throw new JobError(
-        "unknown_profile",
-        `invalid pi thinking level ${thinking}; expected off, minimal, low, medium, high, xhigh or max`
-      );
-    }
+    const thinking = spec.effort === void 0 ? void 0 : validateEffort(spec.effort);
     const args = ["--mode", "json"];
     if (modelArg) args.push("--model", modelArg);
     if (thinking) args.push("--thinking", thinking);
@@ -38892,6 +38922,7 @@ function persisted(job) {
     profile: job.profile,
     provider: job.provider,
     model: job.model,
+    effort: job.effort,
     costUsd: costOf(job),
     access: job.access,
     isolation: job.isolation,
@@ -38939,7 +38970,7 @@ function fromPersisted(saved, engine) {
   fold.state.lastTool = saved.lastTool;
   fold.state.turnEndKind = saved.turnEndKind;
   fold.state.usage = saved.usage;
-  if (backend === "pi") fold.state.costUsd = saved.costUsd;
+  fold.state.costUsd = saved.costUsd;
   return {
     id: saved.id,
     label: saved.label,
@@ -38952,6 +38983,7 @@ function fromPersisted(saved, engine) {
     profile: saved.profile ?? "work-openrouter",
     provider: saved.provider,
     model: saved.model,
+    effort: saved.effort,
     access: saved.access,
     isolation: saved.isolation,
     timeoutMs: saved.timeoutMs,
@@ -39047,7 +39079,7 @@ var JobManager = class {
     await this.writeLease();
   }
   async init() {
-    await mkdir4(join7(this.config.stateDir, "jobs"), { recursive: true, mode: 448 });
+    await mkdir5(join7(this.config.stateDir, "jobs"), { recursive: true, mode: 448 });
     this.pidStart = await readStartTime(process.pid);
     await this.writeLease();
     try {
@@ -39264,6 +39296,8 @@ var JobManager = class {
     let profile;
     let provider;
     let model;
+    let effort;
+    const requestedEffort = input2.effort === void 0 ? void 0 : validateEffort(input2.effort);
     let cwd;
     let access2;
     let isolation;
@@ -39304,6 +39338,7 @@ var JobManager = class {
       profile = await engine.resolveProfile(original.profile);
       provider = original.provider;
       model = original.model;
+      effort = requestedEffort ?? original.effort;
       if (!provider || !model) {
         const metadata = await engine.readProfileMetadata(profile);
         provider ??= metadata.provider;
@@ -39362,6 +39397,7 @@ var JobManager = class {
       const metadata = await engine.readProfileMetadata(profile);
       provider = metadata.provider;
       model = metadata.model;
+      effort = requestedEffort ?? "max";
       cwd = await this.resolveCwd(input2.cwd);
       access2 = input2.access ?? "read-only";
       this.assertBackendAccess(backend, access2);
@@ -39394,7 +39430,7 @@ var JobManager = class {
     const resolvedGroupName = groupName ?? this.defaultGroupName;
     const dir = join7(this.config.stateDir, "jobs", id);
     sessionDir ??= dir;
-    await mkdir4(dir, { recursive: true, mode: 448 });
+    await mkdir5(dir, { recursive: true, mode: 448 });
     const job = {
       id,
       label: input2.label,
@@ -39406,6 +39442,7 @@ var JobManager = class {
       profile,
       provider,
       model,
+      effort,
       cwd,
       access: access2,
       isolation,
@@ -39440,6 +39477,7 @@ var JobManager = class {
       backend: job.backend,
       provider: job.provider,
       model: job.model,
+      effort: job.effort,
       group_id: job.groupId,
       group_name: job.groupName,
       ...job.status === "queued" ? { queue_position: queuePosition } : {},
@@ -39494,6 +39532,7 @@ var JobManager = class {
         profile: job.profile,
         provider: job.provider,
         model: job.model,
+        effort: job.effort,
         access: job.access,
         sessionId: job.sessionId,
         sessionDir: job.sessionDir,
@@ -39566,7 +39605,7 @@ var JobManager = class {
     if (fold.finalText !== void 0) {
       job.finalText = fold.finalText;
       try {
-        await writeFile2(job.finalPath, fold.finalText, { mode: 384 });
+        await writeFile3(job.finalPath, fold.finalText, { mode: 384 });
       } catch {
       }
     }
@@ -39855,6 +39894,7 @@ var JobManager = class {
       backend: job.backend,
       provider: job.provider,
       model: job.model,
+      effort: job.effort,
       usage: job.fold.state.usage,
       cost_usd: costOf(job),
       final: final === void 0 ? void 0 : final.slice(0, maxChars),
@@ -40049,6 +40089,7 @@ var JobManager = class {
       backend: job.backend,
       provider: job.provider,
       model: job.model,
+      effort: job.effort,
       group_id: job.groupId,
       group_name: job.groupName,
       owner_id: job.ownerId,
@@ -40131,7 +40172,7 @@ var JobManager = class {
     const write = async () => {
       const tmpPath = `${job.jobPath}.${process.pid}.${++this.writeSeq}.tmp`;
       try {
-        await writeFile2(tmpPath, JSON.stringify(persisted(job), null, 2), { mode: 384 });
+        await writeFile3(tmpPath, JSON.stringify(persisted(job), null, 2), { mode: 384 });
         await rename2(tmpPath, job.jobPath);
       } catch (err) {
         await rm4(tmpPath, { force: true }).catch(() => void 0);
@@ -40223,6 +40264,9 @@ async function main() {
         ),
         profile: external_exports.string().trim().min(1).max(80).optional().describe(
           "Backend profile for this job: a dsh profile name, a pi model pattern, or a named pi profile. Defaults to the active profile."
+        ),
+        effort: external_exports.enum(EFFORT_LEVELS).optional().describe(
+          "Reasoning effort. Every new job defaults to max when omitted, overriding profile/config thinking. Resumes retain their saved effort when omitted."
         ),
         group_id: external_exports.string().trim().min(1).max(200).optional().describe("Stable parent-session id used to group jobs in the dashboard."),
         group_name: external_exports.string().trim().min(1).max(120).optional().describe("Human-readable parent-session name shown in the dashboard."),

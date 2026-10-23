@@ -1,4 +1,4 @@
-import { mkdtemp, writeFile } from 'node:fs/promises';
+import { mkdtemp, readFile, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
@@ -47,11 +47,27 @@ const spec: EngineLaunchSpec = {
   provider: 'openrouter',
   model: 'deepseek/deepseek-v4.1-flash-1017',
   access: 'read-only',
+  effort: 'max',
   sessionDir: '/tmp/agent-workers-job',
   depth: 0,
 };
 
 describe('PiEngine', () => {
+  it.each(['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'])(
+    'passes %s verbatim and retains it when resuming',
+    async (effort) => {
+      const engine = new PiEngine(config(), () => ({}));
+      for (const sessionId of [undefined, 'existing-session']) {
+        const plan = await engine.launch({ ...spec, effort, sessionId }, 'task');
+        expect(plan.args[plan.args.indexOf('--thinking') + 1]).toBe(effort);
+      }
+      const legacy = await engine.launch(
+        { ...spec, effort: undefined, sessionId: 'old-session' },
+        'task',
+      );
+      expect(legacy.args).not.toContain('--thinking');
+    },
+  );
   it('parses the default model and launches a read-only JSON run', async () => {
     const engine = new PiEngine(config(), () => ({ PATH: process.env.PATH ?? '' }));
     await engine.init();
@@ -75,7 +91,7 @@ describe('PiEngine', () => {
       '--model',
       'openrouter/deepseek/deepseek-v4.1-flash-1017',
       '--thinking',
-      'low',
+      'max',
       '--no-extensions',
       '--no-skills',
       '--no-mcp',
@@ -109,7 +125,7 @@ describe('PiEngine', () => {
       model: 'deepseek/deepseek-v4.1-flash-1017',
       thinking: 'high',
     });
-    const plan = await engine.launch({ ...spec, profile: 'deep-flash' }, 'task');
+    const plan = await engine.launch({ ...spec, profile: 'deep-flash', effort: 'high' }, 'task');
     expect(plan.args).toContain('openrouter/deepseek/deepseek-v4.1-flash-1017');
     expect(plan.args).toContain('--thinking');
     expect(plan.args).toContain('high');
@@ -142,8 +158,10 @@ describe('PiEngine', () => {
     );
     const engine = new PiEngine(config({ piProfilesFile: file }), () => ({}));
     await engine.init();
-    await expect(engine.launch({ ...spec, profile: 'bad' }, 'task')).rejects.toMatchObject({
-      code: 'unknown_profile',
+    await expect(
+      engine.launch({ ...spec, profile: 'bad', effort: 'free' }, 'task'),
+    ).rejects.toMatchObject({
+      code: 'invalid_effort',
     });
   });
 
@@ -157,6 +175,17 @@ describe('PiEngine', () => {
 });
 
 describe('DshEngine', () => {
+  it('rejects unknown levels and missing routing metadata instead of clamping or erasing routing', async () => {
+    const engine = new DshEngine(config(), () => ({}));
+    await expect(engine.launch({ ...spec, effort: 'ultra' }, '')).rejects.toMatchObject({
+      code: 'invalid_effort',
+    });
+    await expect(engine.launch({ ...spec, provider: undefined }, '')).rejects.toMatchObject({
+      code: 'invalid_profile_metadata',
+    });
+    const legacy = await engine.launch({ ...spec, effort: undefined, provider: undefined }, '');
+    expect(legacy.args).not.toContain('--patch');
+  });
   it('keeps the dsh launch contract behind the engine interface', async () => {
     const engine = new DshEngine(config({ backend: 'dsh' }), () => ({
       PATH: process.env.PATH ?? '',
@@ -178,9 +207,18 @@ describe('DshEngine', () => {
     expect(plan.args).toEqual([
       '--profile',
       'personal-deepseek',
+      '--patch',
+      join(spec.sessionDir, `${spec.jobId}-effort.patch.json`),
       '--json',
       '--session-id',
       'session-1',
+    ]);
+    expect(JSON.parse(await readFile(plan.args[3] as string, 'utf8'))).toEqual([
+      {
+        id: 'agent-default-model',
+        name: '@deepseek-ai/dsh-agent-default-model',
+        config: { provider: 'deepseek-official', model: 'deepseek-flash', reasoningEffort: 'max' },
+      },
     ]);
     expect(plan.env.DSH_HOME).toBe('/tmp/agent-workers-fixture-dsh-home');
     expect(plan.env.DSH_PERMISSION_MODE).toBe('workspace-write');

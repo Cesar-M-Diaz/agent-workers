@@ -20,6 +20,7 @@ import {
   isSameOrInside,
   isStalledRunning,
   jobEventsFromSource,
+  jobIdentity,
   jobMetaLine,
   normalizeJob,
   parseEventLines,
@@ -410,6 +411,15 @@ describe('jobs.ts', () => {
     )
   })
 
+  test('shows resolved effort in cards and header identity without inventing legacy effort', () => {
+    const job = normalizeJob({ id: 'j_effort', status: 'running', model: 'model', effort: 'max' }, 'j_effort') as DshJob
+    expect(job.effort).toBe('max')
+    expect(jobMetaLine(job, 0)).toBe('model · effort max')
+    expect(jobIdentity(job)).toBe('effort max · model')
+    expect(normalizeJob({ id: 'j_old', effort: 9 }, 'j_old')?.effort).toBeUndefined()
+    expect(jobMetaLine({ status: 'running' }, 0)).toBe('effort n/a')
+  })
+
   test('builds the collapsed meta line, branch line and running freshness', () => {
     const job = {
       status: 'running',
@@ -421,7 +431,7 @@ describe('jobs.ts', () => {
       toolCalls: 18,
     }
     expect(jobMetaLine(job, Date.parse('2026-10-20T15:03:12.000Z'))).toBe(
-      'deepseek-flash · 3m12s · $0.09 · 12 steps · 18 tools',
+      'deepseek-flash · effort n/a · 3m12s · $0.09 · 12 steps · 18 tools',
     )
     expect(branchLine({ branch: 'dsh/j_1', baseCommit: 'cc9791b1234' })).toBe(
       'dsh/j_1 @ cc9791b',
@@ -1050,7 +1060,7 @@ test('the collapsed card shows model, duration, cost, steps and tools', async ($
   expect(
     await ui.find({
       type: 'Text',
-      text: 'deepseek-flash · 7m36s · $0.09 · 12 steps · 18 tools',
+      text: truncateLine('deepseek-flash · effort n/a · 7m36s · $0.09 · 12 steps · 18 tools', PANE.props.bodyColumns - 4),
     }),
   ).toBeDefined()
   await ui.unmount()
@@ -1135,6 +1145,28 @@ test('an expanded succeeded job renders Markdown and toggles more/less', async (
   await ui.unmount()
 })
 
+test('header keeps effort visible at normal width with real long profile/model names', async ($, on) => {
+  const world = createWorld()
+  world.jobIds.add('j_1')
+  setJob(world, 'j_1', {
+    label: 'long-identity',
+    status: 'succeeded',
+    profile: 'work-openrouter',
+    provider: 'openrouter',
+    model: '~deepseek/deepseek-flash-latest',
+    effort: 'max',
+    usage: { totalTokens: 2670379 },
+    costUsd: 0.42,
+  })
+  installMocks(on, world)
+  await start($)
+  const ui = await mountPane($)
+  expect(await ui.find({ type: 'Text', text: /^effort max · work-openrouter/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: '$0.42' })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: '2.7M tok' })).toBeDefined()
+  await ui.unmount()
+})
+
 test('an expanded job shows details, tokens and the header totals', async ($, on) => {
   const world = createWorld()
   world.jobIds.add('j_1')
@@ -1173,7 +1205,7 @@ test('an expanded job shows details, tokens and the header totals', async ($, on
   const ui = await mountPane($)
 
   expect(
-    await ui.find({ type: 'Text', text: 'personal-deepseek · deepseek-flash' }),
+    await ui.find({ type: 'Text', text: new RegExp('^effort n/a · personal-deepseek') }),
   ).toBeDefined()
   expect(await ui.find({ type: 'Text', text: '2.7M tok' })).toBeDefined()
   expect(await ui.find({ type: 'Text', text: '$0.42' })).toBeDefined()

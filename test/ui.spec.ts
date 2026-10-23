@@ -35,6 +35,7 @@ describe('dashboard API', () => {
         profile: 'work-openrouter',
         provider: 'openrouter',
         model: '~deepseek/deepseek-flash-latest',
+        effort: 'max',
         usage: {
           inputTokens: 1000,
           outputTokens: 100,
@@ -97,6 +98,7 @@ describe('dashboard API', () => {
       jobs: Array<{ id: string; label: string; status: string }>;
     };
     expect(body.jobs).toHaveLength(2);
+    expect(body.jobs.find((job) => job.id === 'j_done')).not.toHaveProperty('effort');
     expect(body.jobs).toContainEqual(
       expect.objectContaining({
         id: 'j_test',
@@ -107,6 +109,7 @@ describe('dashboard API', () => {
         profile: 'work-openrouter',
         provider: 'openrouter',
         model: '~deepseek/deepseek-flash-latest',
+        effort: 'max',
         cost_usd: 0.0002,
         alerts: [
           expect.objectContaining({
