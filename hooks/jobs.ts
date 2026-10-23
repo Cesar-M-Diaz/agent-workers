@@ -377,9 +377,38 @@ export function activitySummary(input: unknown): string {
   if (!isRecord(input)) return ''
   for (const field of SUMMARY_FIELDS) {
     const found = nonEmptyText(input[field])
-    if (found !== undefined) return truncateLine(sanitizeLine(found), 120)
+    if (found !== undefined) return sanitizeLine(found)
   }
   return ''
+}
+
+/** Shorten display-only workspace prefixes; the original summary remains available. */
+export function compactActivitySummary(
+  summary: string,
+  job: Pick<DshJob, 'cwd' | 'worktree'>,
+): string {
+  const root = (job.worktree?.path ?? job.cwd)?.replace(/\/+$/, '')
+  if (root === undefined || root === '') return summary
+  let compact = summary
+  for (const directory of [root, "'" + root + "'", '"' + root + '"']) {
+    const prefix = 'cd ' + directory + ' && '
+    if (compact.startsWith(prefix)) {
+      compact = compact.slice(prefix.length)
+      break
+    }
+  }
+  let offset = 0
+  for (;;) {
+    const index = compact.indexOf(root + '/', offset)
+    if (index < 0) return compact
+    const previous = compact[index - 1]
+    if (previous === undefined || /[\s"'=(:]/.test(previous)) {
+      compact = compact.slice(0, index) + compact.slice(index + root.length + 1)
+      offset = index
+    } else {
+      offset = index + root.length + 1
+    }
+  }
 }
 
 /** Everything the pane derives from one `events.ndjson` read. */

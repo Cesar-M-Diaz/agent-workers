@@ -736,7 +736,7 @@ async function readEventPage(eventsPath, cursor = 0, limit) {
 }
 
 // src/version.ts
-var VERSION = "0.6.0";
+var VERSION = "0.7.0";
 
 // src/ui.ts
 var HOST = "127.0.0.1";

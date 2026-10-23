@@ -37807,7 +37807,7 @@ function closeServer(server) {
 }
 
 // src/version.ts
-var VERSION = "0.6.0";
+var VERSION = "0.7.0";
 
 // src/control/service.ts
 function assertJobId(jobId) {

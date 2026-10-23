@@ -19,6 +19,7 @@ import type {
 } from '../types'
 import {
   accessDisplay,
+  compactActivitySummary,
   alertsLine,
   branchLine,
   cacheHitPercent,
@@ -44,7 +45,6 @@ import {
   isolationDisplay,
   jobEventsFromSource,
   jobIdentity,
-  jobMetaLine,
   joinPath,
   lastNonEmptyLines,
   newestJob,
@@ -61,11 +61,11 @@ import {
   totalCost,
   totalTokens,
   truncateLine,
-  truncateLines,
   usageTokens,
   visibleJobs,
   type JobCacheEntry,
 } from './jobs'
+import { paneMarkdown } from './markdown'
 
 const PANE_ID = 'agent-workers'
 const REFRESH_MS = 1000
@@ -91,6 +91,10 @@ const expandedAtom = atom(
 const finalExpandedAtom = atom(
   { plugin: 'agent-workers', key: 'finalExpanded' } as const,
   [] as string[],
+)
+const sectionOpenAtom = atom(
+  { plugin: 'agent-workers', key: 'sectionOpen' } as const,
+  {} as Record<string, boolean>,
 )
 const showAllAtom = atom(
   { plugin: 'agent-workers', key: 'showAll' } as const,
@@ -139,7 +143,9 @@ function serverFromToolName(name: string): string | undefined {
  * session already connected the server under another name. The answer is
  * cached; a failed resolution stays retryable.
  */
-async function resolveMcpServer($: EngineInterface): Promise<string | undefined> {
+async function resolveMcpServer(
+  $: EngineInterface,
+): Promise<string | undefined> {
   if (resolvedServer !== undefined) return resolvedServer
   try {
     const connected = await $.mcp.connect(PLUGIN_SERVER)
@@ -212,7 +218,11 @@ function parseToolResult(result: McpToolResult): ParsedToolResult {
   let data: Record<string, unknown> | undefined
   try {
     const parsed = JSON.parse(text) as unknown
-    if (typeof parsed === 'object' && parsed !== null && !Array.isArray(parsed)) {
+    if (
+      typeof parsed === 'object' &&
+      parsed !== null &&
+      !Array.isArray(parsed)
+    ) {
       data = parsed as Record<string, unknown>
     }
   } catch {
@@ -356,7 +366,8 @@ async function resolveStateDirFor(
   $: EngineInterface,
   options: PluginOptions,
 ): Promise<string> {
-  const rawOption = typeof options.state_dir === 'string' ? options.state_dir : undefined
+  const rawOption =
+    typeof options.state_dir === 'string' ? options.state_dir : undefined
   const option = rawOption?.trim() ? rawOption.trim() : undefined
   const rawDedicated =
     (await $.env.get('AGENT_WORKERS_STATE_DIR')) ??
@@ -405,7 +416,10 @@ async function writeView($: EngineInterface, next: DshPaneView): Promise<void> {
 }
 
 /** Record a short warning without dropping whatever the pane last showed. */
-async function recordWarning($: EngineInterface, error: unknown): Promise<void> {
+async function recordWarning(
+  $: EngineInterface,
+  error: unknown,
+): Promise<void> {
   try {
     const current = await read($, viewAtom)
     const warning = `refresh failed: ${describeError(error)}`
@@ -475,7 +489,10 @@ async function readFinal(
   const finalPath = joinPath(dir, 'final.md')
   try {
     const stat = await $.fs.stat(finalPath)
-    if (entry.finalSeenMtimeMs === stat.mtimeMs && entry.finalText !== undefined) {
+    if (
+      entry.finalSeenMtimeMs === stat.mtimeMs &&
+      entry.finalText !== undefined
+    ) {
       return
     }
     entry.finalSeenMtimeMs = stat.mtimeMs
@@ -486,7 +503,10 @@ async function readFinal(
     }
     try {
       const source = await $.fs.read(finalPath)
-      entry.finalText = firstNonEmptyLines(source, FINAL_MAX_LINES).join('\n')
+      entry.finalText = source
+        .split(/\r?\n/)
+        .slice(0, FINAL_MAX_LINES)
+        .join('\n')
       entry.finalTooLarge = false
     } catch (error) {
       entry.finalSeenMtimeMs = undefined
@@ -498,7 +518,10 @@ async function readFinal(
   }
 }
 
-async function refresh($: EngineInterface, options: PluginOptions): Promise<void> {
+async function refresh(
+  $: EngineInterface,
+  options: PluginOptions,
+): Promise<void> {
   if (inFlight) return
   inFlight = true
   try {
@@ -666,7 +689,11 @@ export const register: Register = (on, options) => {
   })
 
   on('command.run', { command: 'pane' }, async $ => {
-    await $.ui.open({ id: PANE_ID, title: 'Agent Workers', columns: PANE_COLUMNS })
+    await $.ui.open({
+      id: PANE_ID,
+      title: 'Agent Workers',
+      columns: PANE_COLUMNS,
+    })
     return {}
   })
 
@@ -675,6 +702,7 @@ export const register: Register = (on, options) => {
     const view = await read($, viewAtom)
     const expanded = await read($, expandedAtom)
     const finalExpanded = await read($, finalExpandedAtom)
+    const sectionOpen = await read($, sectionOpenAtom)
     const showAll = await read($, showAllAtom)
     const pendingAction = await read($, pendingActionAtom)
     const actionResults = await read($, actionResultsAtom)
@@ -684,7 +712,6 @@ export const register: Register = (on, options) => {
     )
     // The card's border (2) and paddingX (1 each side) sit inside bodyColumns.
     const innerWidth = Math.max(1, columns - 4)
-    const nestedWidth = Math.max(1, innerWidth - 4)
     const expandedSet = new Set(expanded)
     const finalExpandedSet = new Set(finalExpanded)
     const rows = visibleJobs(view.jobs, {
@@ -705,7 +732,7 @@ export const register: Register = (on, options) => {
       parts: readonly LinePart[],
       width = columns,
     ): RenderElement => {
-      const fitted = fitParts(parts, width)
+      const fitted = width === Infinity ? parts : fitParts(parts, width)
       const only = fitted[0]
       if (fitted.length === 1 && only !== undefined) {
         return (
@@ -715,13 +742,14 @@ export const register: Register = (on, options) => {
             bold={only.bold}
             dimColor={only.dim}
             italic={only.italic}
+            wrap="wrap"
           >
             {only.text}
           </Text>
         )
       }
       return (
-        <Text key={key}>
+        <Text key={key} wrap="wrap">
           {fitted.map((part, index) => (
             <Text
               key={`${key}:${index}`}
@@ -803,12 +831,38 @@ export const register: Register = (on, options) => {
         sanitizeLine(job.label === '' ? job.id : job.label),
         labelMax,
       )
-      const meta = jobMetaLine(job, nowMs)
       const details: RenderElement[] = []
 
-      if (meta !== '') {
-        details.push(line(`meta:${job.id}`, [{ text: meta, dim: true }], innerWidth))
+      const metrics = [`effort ${job.effort ?? 'n/a'}`]
+      const elapsed = elapsedMs(job, nowMs)
+      if (elapsed !== undefined) metrics.push(formatDuration(elapsed))
+      const cost = formatCost(job.costUsd)
+      if (cost !== undefined) metrics.push(cost)
+      details.push(
+        <Text key={`metrics:${job.id}`} wrap="wrap">
+          {metrics.join(' · ')}
+        </Text>,
+      )
+      if (job.model !== undefined) {
+        details.push(
+          line(
+            `model:${job.id}`,
+            [{ text: sanitizeLine(job.model), dim: true }],
+            Infinity,
+          ),
+        )
       }
+      const counts: string[] = []
+      if (job.steps !== undefined) counts.push(`${job.steps} steps`)
+      if (job.toolCalls !== undefined) counts.push(`${job.toolCalls} tools`)
+      if (counts.length > 0)
+        details.push(
+          line(
+            `counts:${job.id}`,
+            [{ text: counts.join(' · '), dim: true }],
+            Infinity,
+          ),
+        )
 
       if (job.alerts.length > 0) {
         details.push(
@@ -830,7 +884,10 @@ export const register: Register = (on, options) => {
           runParts.push({ text: ' ' })
           runParts.push({ text: tool, bold: true })
           if (latest !== undefined && latest.summary !== '') {
-            runParts.push({ text: ` · ${latest.summary}`, dim: true })
+            runParts.push({
+              text: ` · ${compactActivitySummary(latest.summary, job)}`,
+              dim: true,
+            })
           }
         } else if (job.activityTooLarge === true) {
           runParts.push({ text: 'activity log too large', dim: true })
@@ -853,50 +910,74 @@ export const register: Register = (on, options) => {
       }
 
       if (isExpanded) {
-        details.push(
-          line(
-            `activity-title:${job.id}`,
-            [{ text: '─ activity', dim: true }],
-            innerWidth,
-          ),
-        )
+        const activityContent: RenderElement[] = []
+        const metadataContent: RenderElement[] = []
+        const usageContent: RenderElement[] = []
+        const resultContent: RenderElement[] = []
         if (job.activityTooLarge === true) {
-          details.push(
+          activityContent.push(
             line(
               `activity-large:${job.id}`,
               [{ text: 'activity log too large', dim: true }],
-              innerWidth,
+              Infinity,
             ),
           )
         } else if (job.activity.length === 0) {
-          details.push(
+          activityContent.push(
             line(
               `activity-empty:${job.id}`,
               [{ text: 'no activity yet', dim: true }],
-              innerWidth,
+              Infinity,
             ),
           )
         } else {
           for (const activity of job.activity) {
+            const compact = truncateLine(
+              compactActivitySummary(activity.summary, job),
+              Math.max(120, innerWidth * 2),
+            )
             const parts: LinePart[] = [
               { text: activity.glyph, color: glyphColor(activity.glyph) },
               { text: ' ' },
               { text: activity.tool, bold: true },
             ]
             if (activity.summary !== '') {
-              parts.push({ text: ` · ${activity.summary}`, dim: true })
+              parts.push({ text: ` · ${compact}`, dim: true })
             }
-            details.push(
-              line(
-                `activity:${job.id}:${activity.callId}`,
-                parts,
-                innerWidth,
-              ),
+            activityContent.push(
+              line(`activity:${job.id}:${activity.callId}`, parts, Infinity),
             )
+            if (compact !== activity.summary) {
+              const id = `${job.id}:activity:${activity.callId}`
+              const showOriginal = sectionOpen[id] ?? false
+              activityContent.push(
+                <Button
+                  key={`activity-detail:${job.id}:${activity.callId}`}
+                  plain
+                  dimColor
+                  onPress={() => {
+                    void update($, sectionOpenAtom, values => ({
+                      ...values,
+                      [id]: !values[id],
+                    }))
+                  }}
+                >
+                  {showOriginal ? 'Hide original' : 'Show original'}
+                </Button>,
+              )
+              if (showOriginal)
+                activityContent.push(
+                  line(
+                    `activity-original:${job.id}:${activity.callId}`,
+                    [{ text: activity.summary, dim: true }],
+                    Infinity,
+                  ),
+                )
+            }
           }
         }
         if (job.lastError !== undefined) {
-          details.push(
+          activityContent.push(
             line(
               `last-error:${job.id}`,
               [
@@ -905,66 +986,59 @@ export const register: Register = (on, options) => {
                   color: 'warning',
                 },
               ],
-              innerWidth,
+              Infinity,
             ),
           )
         }
 
         if (job.toolCounts.length > 0) {
-          details.push(
+          activityContent.push(
             line(
               `tools-title:${job.id}`,
               [{ text: '─ tools', dim: true }],
-              innerWidth,
+              Infinity,
             ),
             line(
               `tools:${job.id}`,
               [{ text: toolCountsLine(job.toolCounts) }],
-              innerWidth,
+              Infinity,
             ),
           )
         }
 
         if (isRunningStatus(job.status) && job.lastText !== undefined) {
-          details.push(
+          activityContent.push(
             line(
               `says-title:${job.id}`,
               [{ text: '─ says', dim: true }],
-              innerWidth,
+              Infinity,
             ),
           )
           const says = firstNonEmptyLines(job.lastText, SAYS_LINES)
           for (let index = 0; index < says.length; index += 1) {
-            details.push(
+            activityContent.push(
               line(
                 `says:${job.id}:${index}`,
                 [{ text: sanitizeLine(says[index] ?? ''), italic: true }],
-                innerWidth,
+                Infinity,
               ),
             )
           }
         }
 
-        details.push(
-          line(
-            `details-title:${job.id}`,
-            [{ text: '─ details', dim: true }],
-            innerWidth,
-          ),
-        )
         let detailLines = 0
         const profile = [job.profile, job.provider]
           .filter((value): value is string => value !== undefined)
           .join(' / ')
         if (profile !== '') {
-          details.push(
+          metadataContent.push(
             line(
               `profile:${job.id}`,
               [
                 { text: 'profile/provider ', dim: true },
                 { text: sanitizeLine(profile) },
               ],
-              innerWidth,
+              Infinity,
             ),
           )
           detailLines += 1
@@ -980,32 +1054,29 @@ export const register: Register = (on, options) => {
             accessParts.push({ text: ' · ', dim: true })
             accessParts.push({ text: sanitizeLine(isolation) })
           }
-          details.push(line(`access:${job.id}`, accessParts, innerWidth))
+          metadataContent.push(line(`access:${job.id}`, accessParts, Infinity))
           detailLines += 1
         }
         const branch = branchLine(job.worktree)
         if (branch !== undefined) {
-          details.push(
+          metadataContent.push(
             line(
               `branch:${job.id}`,
-              [
-                { text: 'branch ', dim: true },
-                { text: sanitizeLine(branch) },
-              ],
-              innerWidth,
+              [{ text: 'branch ', dim: true }, { text: sanitizeLine(branch) }],
+              Infinity,
             ),
           )
           detailLines += 1
         }
         if (job.groupName !== undefined) {
-          details.push(
+          metadataContent.push(
             line(
               `group:${job.id}`,
               [
                 { text: 'group ', dim: true },
                 { text: sanitizeLine(job.groupName) },
               ],
-              innerWidth,
+              Infinity,
             ),
           )
           detailLines += 1
@@ -1021,26 +1092,26 @@ export const register: Register = (on, options) => {
           if (elapsed !== undefined) {
             startedParts.push({ text: formatDuration(elapsed), dim: true })
           }
-          details.push(
-            line(`started:${job.id}`, startedParts, innerWidth),
+          metadataContent.push(
+            line(`started:${job.id}`, startedParts, Infinity),
           )
           detailLines += 1
         }
         if (job.turnEndKind !== undefined) {
-          details.push(
+          metadataContent.push(
             line(
               `turn-end:${job.id}`,
               [
                 { text: 'turn end ', dim: true },
                 { text: sanitizeLine(job.turnEndKind) },
               ],
-              innerWidth,
+              Infinity,
             ),
           )
           detailLines += 1
         }
         if ((job.malformedLines ?? 0) > 0) {
-          details.push(
+          metadataContent.push(
             line(
               `malformed:${job.id}`,
               [
@@ -1049,42 +1120,37 @@ export const register: Register = (on, options) => {
                   color: 'warning',
                 },
               ],
-              innerWidth,
+              Infinity,
             ),
           )
           detailLines += 1
         }
         if (detailLines === 0) {
-          details.push(
+          metadataContent.push(
             line(
               `details-empty:${job.id}`,
               [{ text: 'no details', dim: true }],
-              innerWidth,
+              Infinity,
             ),
           )
         }
 
         const usage = job.usage
         if (usage !== undefined || job.costUsd !== undefined) {
-          details.push(
-            line(
-              `tokens-title:${job.id}`,
-              [{ text: '─ tokens', dim: true }],
-              innerWidth,
-            ),
-          )
           const tokenParts: LinePart[] = []
           if (usage?.inputTokens !== undefined) {
             tokenParts.push({ text: 'in ', dim: true })
             tokenParts.push({ text: formatTokens(usage.inputTokens) })
           }
           if (usage?.outputTokens !== undefined) {
-            if (tokenParts.length > 0) tokenParts.push({ text: ' · ', dim: true })
+            if (tokenParts.length > 0)
+              tokenParts.push({ text: ' · ', dim: true })
             tokenParts.push({ text: 'out ', dim: true })
             tokenParts.push({ text: formatTokens(usage.outputTokens) })
           }
           if (usage?.cacheReadTokens !== undefined) {
-            if (tokenParts.length > 0) tokenParts.push({ text: ' · ', dim: true })
+            if (tokenParts.length > 0)
+              tokenParts.push({ text: ' · ', dim: true })
             tokenParts.push({ text: 'cache ', dim: true })
             tokenParts.push({ text: formatTokens(usage.cacheReadTokens) })
             const hit = cacheHitPercent(usage)
@@ -1100,78 +1166,68 @@ export const register: Register = (on, options) => {
             }
           }
           if (tokenParts.length > 0) {
-            details.push(line(`tokens:${job.id}`, tokenParts, innerWidth))
+            usageContent.push(line(`tokens:${job.id}`, tokenParts, Infinity))
           }
           if (usage?.cacheWriteTokens !== undefined) {
-            details.push(
+            usageContent.push(
               line(
                 `cache-write:${job.id}`,
                 [
                   { text: 'cache write ', dim: true },
                   { text: formatTokens(usage.cacheWriteTokens) },
                 ],
-                innerWidth,
+                Infinity,
               ),
             )
           }
           if (usage?.reasoningTokens !== undefined) {
-            details.push(
+            usageContent.push(
               line(
                 `reasoning:${job.id}`,
                 [
                   { text: 'reasoning ', dim: true },
                   { text: formatTokens(usage.reasoningTokens) },
                 ],
-                innerWidth,
+                Infinity,
               ),
             )
           }
           const jobCost = formatCost(job.costUsd)
           if (jobCost !== undefined) {
-            details.push(
+            usageContent.push(
               line(
                 `cost:${job.id}`,
                 [
                   { text: 'cost ', dim: true },
                   { text: jobCost, bold: true },
                 ],
-                innerWidth,
+                Infinity,
               ),
             )
           }
         }
 
         if (job.status === 'succeeded') {
-          details.push(
-            line(
-              `result-title:${job.id}`,
-              [{ text: '─ result', dim: true }],
-              innerWidth,
-            ),
-          )
           if (job.finalTooLarge === true) {
-            details.push(
+            resultContent.push(
               line(
                 `final-large:${job.id}`,
                 [{ text: 'final.md too large', dim: true }],
-                innerWidth,
+                Infinity,
               ),
             )
           } else if (job.finalText !== undefined && job.finalText !== '') {
-            const full = truncateLines(job.finalText, innerWidth)
-            const preview = truncateLines(
-              firstNonEmptyLines(job.finalText, FINAL_LINES).join('\n'),
-              innerWidth,
-            )
+            const full = job.finalText
+            const preview = full.split(/\r?\n/).slice(0, FINAL_LINES).join('\n')
             const showFull = finalExpandedSet.has(job.id)
-            details.push(
+            resultContent.push(
               <Markdown
                 key={`final-md:${job.id}`}
-                text={showFull ? full : preview}
+                text={paneMarkdown(showFull ? full : preview)}
               />,
             )
             if (full !== preview) {
-              details.push(
+              resultContent.push(
                 <Button
                   key={`final:${job.id}`}
                   plain
@@ -1187,11 +1243,11 @@ export const register: Register = (on, options) => {
               )
             }
           } else {
-            details.push(
+            resultContent.push(
               line(
                 `final-empty:${job.id}`,
                 [{ text: 'no final.md', dim: true }],
-                innerWidth,
+                Infinity,
               ),
             )
           }
@@ -1202,20 +1258,18 @@ export const register: Register = (on, options) => {
           job.status === 'timed_out' ||
           job.status === 'interrupted'
         ) {
-          details.push(
-            line(
-              `result-title:${job.id}`,
-              [{ text: '─ result', dim: true }],
-              innerWidth,
-            ),
-          )
           const errorLines: RenderElement[] = []
           if (job.reason !== undefined) {
             errorLines.push(
               line(
                 `reason:${job.id}`,
-                [{ text: `reason: ${sanitizeLine(job.reason)}`, color: 'error' }],
-                nestedWidth,
+                [
+                  {
+                    text: `reason: ${sanitizeLine(job.reason)}`,
+                    color: 'error',
+                  },
+                ],
+                Infinity,
               ),
             )
           }
@@ -1228,7 +1282,7 @@ export const register: Register = (on, options) => {
               line(
                 `error-message:${job.id}:${index}`,
                 [{ text: sanitizeLine(message), color: 'error' }],
-                nestedWidth,
+                Infinity,
               ),
             )
           })
@@ -1239,7 +1293,7 @@ export const register: Register = (on, options) => {
               line(
                 `stderr:${job.id}:${index}`,
                 [{ text: sanitizeLine(`${prefix}${value}`), dim: true }],
-                nestedWidth,
+                Infinity,
               ),
             )
           })
@@ -1248,11 +1302,11 @@ export const register: Register = (on, options) => {
               line(
                 `error-empty:${job.id}`,
                 [{ text: 'no error details', dim: true }],
-                nestedWidth,
+                Infinity,
               ),
             )
           }
-          details.push(
+          resultContent.push(
             <Box
               key={`error:${job.id}`}
               flexDirection="column"
@@ -1265,129 +1319,193 @@ export const register: Register = (on, options) => {
           )
         }
 
-        details.push(
-          <Box key={`actions:${job.id}`} flexDirection="row" gap={1}>
-            <Button
-              key={`copy-id:${job.id}`}
-              plain
-              dimColor
-              onPress={press => {
-                void $.ui
-                  .copy({ text: job.id, surface: press.surface })
-                  .catch(() => undefined)
-              }}
-            >
-              copy id
-            </Button>
-            {job.worktree?.branch !== undefined && (
+        const section = (
+          name: string,
+          title: string,
+          content: RenderElement[],
+          defaultOpen = false,
+        ): RenderElement => {
+          const sectionId = `${job.id}:${name}`
+          const open = sectionOpen[sectionId] ?? defaultOpen
+          return (
+            <Box key={`section:${sectionId}`} flexDirection="column">
               <Button
-                key={`copy-branch:${job.id}`}
+                key={`section-toggle:${sectionId}`}
+                plain
+                dimColor
+                onPress={() => {
+                  void update($, sectionOpenAtom, values => ({
+                    ...values,
+                    [sectionId]: !(values[sectionId] ?? defaultOpen),
+                  }))
+                }}
+              >
+                {`${open ? '▼' : '▶'} ${title}`}
+              </Button>
+              {open ? content : null}
+            </Box>
+          )
+        }
+        if (resultContent.length > 0) {
+          details.push(
+            section(
+              'result',
+              job.status === 'succeeded' ? 'Result' : 'Error',
+              resultContent,
+              true,
+            ),
+          )
+        }
+        const activityCount =
+          job.toolCalls ??
+          job.toolCounts.reduce((sum, entry) => sum + entry.count, 0)
+        details.push(
+          section(
+            'activity',
+            `Activity (${activityCount}) · latest ${job.activity.length}`,
+            activityContent,
+            isRunningStatus(job.status),
+          ),
+        )
+        if (usageContent.length > 0)
+          details.push(section('usage', 'Usage', usageContent))
+        details.push(section('details', 'Details', metadataContent))
+
+        details.push(
+          <Box key={`actions:${job.id}`} flexDirection="column">
+            <Box
+              key={`copy-actions:${job.id}`}
+              flexDirection={innerWidth >= 26 ? 'row' : 'column'}
+              gap={1}
+            >
+              <Button
+                key={`copy-id:${job.id}`}
                 plain
                 dimColor
                 onPress={press => {
                   void $.ui
-                    .copy({
-                      text: job.worktree?.branch ?? '',
-                      surface: press.surface,
-                    })
+                    .copy({ text: job.id, surface: press.surface })
                     .catch(() => undefined)
                 }}
               >
-                copy branch
+                Copy ID
               </Button>
-            )}
-            {canCleanup && (
-              <Button
-                key={`cleanup:${job.id}`}
-                plain
-                dimColor={
-                  !(
-                    jobPending?.action === 'cleanup' &&
-                    jobPending.stage === 'confirm'
-                  )
-                }
-                onPress={() => {
-                  void pressAction($, job, 'cleanup', 'confirm')
-                }}
-              >
-                {jobPending?.action === 'cleanup' &&
-                jobPending.stage === 'confirm' ? (
-                  <Text color="warning">confirm cleanup?</Text>
-                ) : (
-                  'cleanup'
-                )}
-              </Button>
-            )}
-            {status.isTerminal && (
-              <Button
-                key={`delete:${job.id}`}
-                plain
-                dimColor={
-                  !(
-                    jobPending?.action === 'delete' &&
-                    jobPending.stage === 'confirm'
-                  )
-                }
-                onPress={() => {
-                  void pressAction($, job, 'delete', 'confirm')
-                }}
-              >
-                {jobPending?.action === 'delete' &&
-                jobPending.stage === 'confirm' ? (
-                  <Text color="warning">confirm delete?</Text>
-                ) : (
-                  'delete'
-                )}
-              </Button>
-            )}
-            {status.isTerminal &&
-              actionResult?.needsDiscard === true &&
-              actionResult.action === 'cleanup' && (
+              {job.worktree?.branch !== undefined && (
                 <Button
-                  key={`discard-clean:${job.id}`}
+                  key={`copy-branch:${job.id}`}
+                  plain
+                  dimColor
+                  onPress={press => {
+                    void $.ui
+                      .copy({
+                        text: job.worktree?.branch ?? '',
+                        surface: press.surface,
+                      })
+                      .catch(() => undefined)
+                  }}
+                >
+                  Copy branch
+                </Button>
+              )}
+            </Box>
+            <Box
+              key={`manage-actions:${job.id}`}
+              flexDirection="column"
+              marginTop={1}
+            >
+              {canCleanup && (
+                <Button
+                  key={`cleanup:${job.id}`}
                   plain
                   dimColor={
                     !(
                       jobPending?.action === 'cleanup' &&
-                      jobPending.stage === 'discard'
+                      jobPending.stage === 'confirm'
                     )
                   }
                   onPress={() => {
-                    void pressAction($, job, 'cleanup', 'discard')
+                    void pressAction($, job, 'cleanup', 'confirm')
                   }}
                 >
                   {jobPending?.action === 'cleanup' &&
-                  jobPending.stage === 'discard' ? (
-                    <Text color="warning">confirm discard?</Text>
+                  jobPending.stage === 'confirm' ? (
+                    <Text color="warning">confirm cleanup?</Text>
                   ) : (
-                    'discard & clean'
+                    'Clean worktree'
                   )}
                 </Button>
               )}
-            {status.isTerminal &&
-              actionResult?.needsDiscard === true &&
-              actionResult.action === 'delete' && (
+              {status.isTerminal && (
                 <Button
-                  key={`discard-delete:${job.id}`}
+                  key={`delete:${job.id}`}
                   plain
                   dimColor={
                     !(
                       jobPending?.action === 'delete' &&
-                      jobPending.stage === 'discard'
+                      jobPending.stage === 'confirm'
                     )
                   }
                   onPress={() => {
-                    void pressAction($, job, 'delete', 'discard')
+                    void pressAction($, job, 'delete', 'confirm')
                   }}
                 >
                   {jobPending?.action === 'delete' &&
-                  jobPending.stage === 'discard' ? (
-                    <Text color="warning">confirm discard?</Text>
+                  jobPending.stage === 'confirm' ? (
+                    <Text color="warning">confirm delete?</Text>
                   ) : (
-                    'discard & delete'
+                    'Delete worker'
                   )}
                 </Button>
               )}
+              {status.isTerminal &&
+                actionResult?.needsDiscard === true &&
+                actionResult.action === 'cleanup' && (
+                  <Button
+                    key={`discard-clean:${job.id}`}
+                    plain
+                    dimColor={
+                      !(
+                        jobPending?.action === 'cleanup' &&
+                        jobPending.stage === 'discard'
+                      )
+                    }
+                    onPress={() => {
+                      void pressAction($, job, 'cleanup', 'discard')
+                    }}
+                  >
+                    {jobPending?.action === 'cleanup' &&
+                    jobPending.stage === 'discard' ? (
+                      <Text color="warning">confirm discard?</Text>
+                    ) : (
+                      'discard & clean'
+                    )}
+                  </Button>
+                )}
+              {status.isTerminal &&
+                actionResult?.needsDiscard === true &&
+                actionResult.action === 'delete' && (
+                  <Button
+                    key={`discard-delete:${job.id}`}
+                    plain
+                    dimColor={
+                      !(
+                        jobPending?.action === 'delete' &&
+                        jobPending.stage === 'discard'
+                      )
+                    }
+                    onPress={() => {
+                      void pressAction($, job, 'delete', 'discard')
+                    }}
+                  >
+                    {jobPending?.action === 'delete' &&
+                    jobPending.stage === 'discard' ? (
+                      <Text color="warning">confirm discard?</Text>
+                    ) : (
+                      'discard & delete'
+                    )}
+                  </Button>
+                )}
+            </Box>
           </Box>,
         )
         if (actionResult !== undefined && status.isTerminal) {
@@ -1405,6 +1523,7 @@ export const register: Register = (on, options) => {
       return (
         <Box
           key={job.id}
+          width={columns}
           flexDirection="column"
           borderStyle="round"
           borderColor={alertActive ? 'warning' : status.tone}
@@ -1457,7 +1576,9 @@ export const register: Register = (on, options) => {
       <Box
         flexDirection="column"
         backgroundColor={background}
-        minHeight={background === undefined ? undefined : e.props.scroll?.bodyRows}
+        minHeight={
+          background === undefined ? undefined : e.props.scroll?.bodyRows
+        }
       >
         <Box flexDirection="row" justifyContent="space-between">
           <Text bold color="claude">

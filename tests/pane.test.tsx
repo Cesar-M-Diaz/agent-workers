@@ -8,6 +8,7 @@ import {
   belongsToProject,
   branchLine,
   cacheHitPercent,
+  compactActivitySummary,
   deriveActivity,
   deriveJobEvents,
   eventsAgeMs,
@@ -87,7 +88,11 @@ describe('jobs.ts', () => {
           repoRoot: '/repo',
           cleaned: false,
         },
-        usage: { inputTokens: 81664, outputTokens: 21803, totalTokens: 2670379 },
+        usage: {
+          inputTokens: 81664,
+          outputTokens: 21803,
+          totalTokens: 2670379,
+        },
       },
       'j_1c3a1b73b269',
     )
@@ -124,7 +129,9 @@ describe('jobs.ts', () => {
       },
     ])
     expect(normalizeJob({ id: 'j_plain' }, 'j_plain')?.alerts).toEqual([])
-    expect(normalizeJob({ id: 'j_bad', alerts: 'no' }, 'j_bad')?.alerts).toEqual([])
+    expect(
+      normalizeJob({ id: 'j_bad', alerts: 'no' }, 'j_bad')?.alerts,
+    ).toEqual([])
     expect(
       alertsLine([
         { kind: 'loop', message: 'same bash call repeated 5× in last 10' },
@@ -180,6 +187,47 @@ describe('jobs.ts', () => {
     expect(activity[0]?.summary).toBe('pnpm test')
     expect(activity[1]?.summary).toBe('src/a.ts')
     expect(activity[2]?.summary).toBe('TODO')
+  })
+
+  test('activity previews abbreviate workspace paths without losing the original', () => {
+    const job = { cwd: '/repo', worktree: { path: '/state/worktrees/j_1' } }
+    expect(
+      compactActivitySummary('cd /state/worktrees/j_1 && pnpm test', job),
+    ).toBe('pnpm test')
+    expect(
+      compactActivitySummary('cd "/state/worktrees/j_1" && pnpm test', job),
+    ).toBe('pnpm test')
+    expect(compactActivitySummary('/state/worktrees/j_1/src/a.ts', job)).toBe(
+      'src/a.ts',
+    )
+    expect(compactActivitySummary('/state/worktrees/j_10/src/a.ts', job)).toBe(
+      '/state/worktrees/j_10/src/a.ts',
+    )
+    expect(
+      compactActivitySummary('cd /state/worktrees/j_1/sub && pnpm test', job),
+    ).toBe('cd sub && pnpm test')
+    expect(compactActivitySummary('pnpm test', {})).toBe('pnpm test')
+    expect(compactActivitySummary('/backup/repo/file', { cwd: '/repo' })).toBe(
+      '/backup/repo/file',
+    )
+    expect(
+      compactActivitySummary('https://host/repo/file', { cwd: '/repo' }),
+    ).toBe('https://host/repo/file')
+    expect(
+      compactActivitySummary('cat /repo/a /backup/repo/b --file=/repo/c', {
+        cwd: '/repo',
+      }),
+    ).toBe('cat a /backup/repo/b --file=c')
+    const command = 'echo ' + 'long argument '.repeat(25) + 'END'
+    const activity = activityFromEvents(
+      JSON.stringify({
+        type: 'tool_call',
+        callId: 'c1',
+        tool: 'bash',
+        input: { command },
+      }),
+    )
+    expect(activity[0]?.summary).toBe(command)
   })
 
   test('the activity list is the last 8 tool calls', () => {
@@ -264,11 +312,7 @@ describe('jobs.ts', () => {
       { groupName: 'alpha' },
       {},
     ])
-    expect(groups.map(group => group.name)).toEqual([
-      'alpha',
-      'beta',
-      'Other',
-    ])
+    expect(groups.map(group => group.name)).toEqual(['alpha', 'beta', 'Other'])
     expect(groups[0]?.jobs).toHaveLength(2)
     expect(formatDuration(0)).toBe('0s')
     expect(formatDuration(62_000)).toBe('1m02s')
@@ -385,8 +429,16 @@ describe('jobs.ts', () => {
         tool: 'glob',
         input: { pattern: '*.ts' },
       }),
-      JSON.stringify({ type: 'tool_result', callId: 'b0', status: 'completed' }),
-      JSON.stringify({ type: 'tool_result', callId: 'b1', status: 'completed' }),
+      JSON.stringify({
+        type: 'tool_result',
+        callId: 'b0',
+        status: 'completed',
+      }),
+      JSON.stringify({
+        type: 'tool_result',
+        callId: 'b1',
+        status: 'completed',
+      }),
       JSON.stringify({ type: 'error', message: '  boom happened  ' }),
       JSON.stringify({ type: 'text', text: '  first pass  ' }),
       JSON.stringify({ type: 'text', text: '  final answer  ' }),
@@ -412,11 +464,16 @@ describe('jobs.ts', () => {
   })
 
   test('shows resolved effort in cards and header identity without inventing legacy effort', () => {
-    const job = normalizeJob({ id: 'j_effort', status: 'running', model: 'model', effort: 'max' }, 'j_effort') as DshJob
+    const job = normalizeJob(
+      { id: 'j_effort', status: 'running', model: 'model', effort: 'max' },
+      'j_effort',
+    ) as DshJob
     expect(job.effort).toBe('max')
     expect(jobMetaLine(job, 0)).toBe('model · effort max')
     expect(jobIdentity(job)).toBe('effort max · model')
-    expect(normalizeJob({ id: 'j_old', effort: 9 }, 'j_old')?.effort).toBeUndefined()
+    expect(
+      normalizeJob({ id: 'j_old', effort: 9 }, 'j_old')?.effort,
+    ).toBeUndefined()
     expect(jobMetaLine({ status: 'running' }, 0)).toBe('effort n/a')
   })
 
@@ -453,7 +510,6 @@ describe('jobs.ts', () => {
     ).toBe(false)
   })
 
-
   test('accepts only a #rrggbb pane background', () => {
     expect(paneBackground('#181818')).toBe('#181818')
     expect(paneBackground(' #1A1B1C ')).toBe('#1a1b1c')
@@ -475,9 +531,7 @@ describe('jobs.ts', () => {
     expect(
       resolveStateDir({ dedicated: '/env/state', xdgStateHome: '/xdg' }),
     ).toBe('/env/state')
-    expect(resolveStateDir({ xdgStateHome: '/xdg' })).toBe(
-      '/xdg/agent-workers',
-    )
+    expect(resolveStateDir({ xdgStateHome: '/xdg' })).toBe('/xdg/agent-workers')
     expect(resolveStateDir({ home: '/home/u' })).toBe(
       '/home/u/.local/state/agent-workers',
     )
@@ -719,7 +773,9 @@ test('missing jobs dir shows the empty message and resolved path', async ($, on)
   await start($)
   const ui = await mountPane($)
 
-  expect(await ui.find({ type: 'Text', text: /No worker jobs yet/ })).toBeDefined()
+  expect(
+    await ui.find({ type: 'Text', text: /No worker jobs yet/ }),
+  ).toBeDefined()
   expect(await ui.find({ type: 'Text', text: world.stateDir })).toBeDefined()
   await ui.unmount()
 })
@@ -738,17 +794,16 @@ test('invalid JSON keeps the last valid job and recovers on the next valid read'
   await clock.advance(1000)
 
   expect(await ui.find({ key: 'job:j_1' })).toBeDefined()
-  expect(await ui.find({ type: 'Text', text: /invalid job\.json/ })).toBeDefined()
+  expect(
+    await ui.find({ type: 'Text', text: /invalid job\.json/ }),
+  ).toBeDefined()
 
-  setJob(
-    world,
-    'j_1',
-    { label: 'recovered-job', status: 'succeeded' },
-    30,
-  )
+  setJob(world, 'j_1', { label: 'recovered-job', status: 'succeeded' }, 30)
   await clock.advance(1000)
 
-  expect(await ui.find({ type: 'Text', text: /invalid job\.json/ })).toBeUndefined()
+  expect(
+    await ui.find({ type: 'Text', text: /invalid job\.json/ }),
+  ).toBeUndefined()
   const row = await ui.find({ key: 'job:j_1' })
   expect(row?.text).toContain('recovered-job')
   expect(await ui.find({ type: 'Text', text: /✓ SUCCEEDED/ })).toBeDefined()
@@ -788,7 +843,12 @@ test('a running job becomes succeeded and shows final.md when expanded', async (
     steps: 3,
     toolCalls: 2,
   })
-  putFile(world, finalPath(world, 'j_1'), '## Summary\n\nAll good\n\nSecond line', 2)
+  putFile(
+    world,
+    finalPath(world, 'j_1'),
+    '## Summary\n\nAll good\n\nSecond line',
+    2,
+  )
   const { clock } = installMocks(on, world)
 
   await start($)
@@ -811,12 +871,12 @@ test('a running job becomes succeeded and shows final.md when expanded', async (
   expect(await ui.find({ type: 'Text', text: /✓ SUCCEEDED/ })).toBeDefined()
 
   await ui.press({ key: 'job:j_1' })
-  expect(await ui.find({ type: 'Text', text: /3 steps · 2 tools/ })).toBeDefined()
+  expect(
+    await ui.find({ type: 'Text', text: /3 steps · 2 tools/ }),
+  ).toBeDefined()
 
   await clock.advance(1000)
-  expect(
-    await ui.find({ type: 'Markdown', text: /All good/ }),
-  ).toBeDefined()
+  expect(await ui.find({ type: 'Markdown', text: /All good/ })).toBeDefined()
   await ui.unmount()
 })
 
@@ -848,7 +908,9 @@ test('pressing a row expands it and expansion survives a refresh', async ($, on)
 
   await ui.press({ key: 'job:j_1' })
   expect((await ui.find({ key: 'job:j_1' }))?.text).toContain('▼ activity-job')
-  expect(await ui.find({ type: 'Text', text: /12 steps · 5 tools/ })).toBeDefined()
+  expect(
+    await ui.find({ type: 'Text', text: /12 steps · 5 tools/ }),
+  ).toBeDefined()
 
   await clock.advance(1000)
   expect((await ui.find({ key: 'job:j_1' }))?.text).toContain('▼ activity-job')
@@ -937,9 +999,13 @@ test('an expanded failed job shows reason, error and the last stderr lines', asy
   const errorBox = await ui.find({ key: 'error:j_1' })
   expect(errorBox?.props.borderStyle).toBe('single')
   expect(errorBox?.props.borderColor).toBe('error')
-  expect(await ui.find({ type: 'Text', text: /reason: turn_error/ })).toBeDefined()
+  expect(
+    await ui.find({ type: 'Text', text: /reason: turn_error/ }),
+  ).toBeDefined()
   expect(await ui.find({ type: 'Text', text: /boom happened/ })).toBeDefined()
-  expect(await ui.find({ type: 'Text', text: /stderr: line two/ })).toBeDefined()
+  expect(
+    await ui.find({ type: 'Text', text: /stderr: line two/ }),
+  ).toBeDefined()
   expect(await ui.find({ type: 'Text', text: /line four/ })).toBeDefined()
   expect(await ui.find({ type: 'Text', text: /line one/ })).toBeUndefined()
   await ui.unmount()
@@ -1060,7 +1126,7 @@ test('the collapsed card shows model, duration, cost, steps and tools', async ($
   expect(
     await ui.find({
       type: 'Text',
-      text: truncateLine('deepseek-flash · effort n/a · 7m36s · $0.09 · 12 steps · 18 tools', PANE.props.bodyColumns - 4),
+      text: 'effort n/a · 7m36s · $0.09',
     }),
   ).toBeDefined()
   await ui.unmount()
@@ -1126,6 +1192,7 @@ test('an expanded succeeded job renders Markdown and toggles more/less', async (
   await ui.press({ key: 'job:j_1' })
   await clock.advance(1000)
 
+  await ui.press({ key: 'section-toggle:j_1:activity' })
   expect(await ui.find({ type: 'Text', text: /bash 1/ })).toBeDefined()
   expect(await ui.find({ type: 'Text', text: /edit 1/ })).toBeDefined()
   expect(await ui.find({ type: 'Text', text: /pnpm test/ })).toBeDefined()
@@ -1145,6 +1212,255 @@ test('an expanded succeeded job renders Markdown and toggles more/less', async (
   await ui.unmount()
 })
 
+test('result Markdown retains long lines and formatting at narrow widths', async ($, on) => {
+  const world = createWorld()
+  world.jobIds.add('j_1')
+  setJob(world, 'j_1', { status: 'succeeded' })
+  const paragraph =
+    '**Complete result:** ' + 'readable content '.repeat(16) + 'END-MARKER'
+  const markdown =
+    paragraph + '\n\n- **src/a-long-file-name.ts** remains intact'
+  putFile(world, finalPath(world, 'j_1'), markdown, 2)
+  const { clock } = installMocks(on, world)
+  await start($)
+  const ui = await $.ui.mount({
+    ...PANE,
+    props: { ...PANE.props, bodyColumns: 30 },
+  })
+  await ui.press({ key: 'job:j_1' })
+  await clock.advance(1000)
+  expect((await ui.find({ type: 'Markdown' }))?.text).toBe(markdown)
+  await ui.unmount()
+})
+
+test('long results keep horizontal content in both preview and full view', async ($, on) => {
+  const world = createWorld()
+  world.jobIds.add('j_1')
+  setJob(world, 'j_1', { status: 'succeeded' })
+  const lines = Array.from(
+    { length: 20 },
+    (_, i) => 'line ' + i + ' ' + 'complete '.repeat(15) + 'END-' + i,
+  )
+  putFile(world, finalPath(world, 'j_1'), lines.join('\n'), 2)
+  const { clock } = installMocks(on, world)
+  await start($)
+  const ui = await mountPane($)
+  await ui.press({ key: 'job:j_1' })
+  await clock.advance(1000)
+  expect((await ui.find({ type: 'Markdown' }))?.text).toContain('END-0')
+  expect((await ui.find({ type: 'Markdown' }))?.text).not.toContain('END-19')
+  await ui.press({ key: 'final:j_1' })
+  expect((await ui.find({ type: 'Markdown' }))?.text).toBe(lines.join('\n'))
+  await ui.unmount()
+})
+
+test('result tables become wrapping labeled rows rather than oversized terminal grids', async ($, on) => {
+  const world = createWorld()
+  world.jobIds.add('j_1')
+  setJob(world, 'j_1', { status: 'succeeded' })
+  const markdown = [
+    '## Command results', '',
+    '| Command | Result |',
+    '| --- | --- |',
+    '| \u0060pnpm lint\u0060 | \u0060eslint .\u0060 — no output, exit 0 |',
+    '| \u0060pnpm test\u0060 | tests 101, suites 27, pass 101, fail 0, cancelled 0, skipped 0, todo 0 (was 97), exit 0 |',
+    '', 'All commands passed.',
+    ...Array.from({ length: 12 }, (_, i) => 'Extra paragraph ' + i),
+    '| Check | Outcome |', '| --- | --- |', '| build | Build complete! |',
+  ].join('\n')
+  putFile(world, finalPath(world, 'j_1'), markdown, 2)
+  const { clock } = installMocks(on, world)
+  await start($)
+  for (const width of [30, 58, 86]) {
+    const ui = await $.ui.mount({ ...PANE, props: { ...PANE.props, bodyColumns: width } })
+    if ((await ui.find({ key: 'job:j_1' }))?.text?.includes('▶')) await ui.press({ key: 'job:j_1' })
+    await clock.advance(1000)
+    const preview = (await ui.find({ type: 'Markdown' }))?.text
+    expect(preview).toContain('**Command:**')
+    expect(preview).toContain('**Result:**')
+    expect(preview).toContain('tests 101, suites 27, pass 101, fail 0, cancelled 0, skipped 0, todo 0 (was 97), exit 0')
+    expect(preview).not.toContain('| --- |')
+    expect(preview).toContain('All commands passed.')
+    if ((await ui.find({ key: 'final:j_1' }))?.text === 'more') await ui.press({ key: 'final:j_1' })
+    const full = (await ui.find({ type: 'Markdown' }))?.text
+    expect(full).toContain('**Outcome:** Build complete!')
+    expect(full).not.toContain('| --- |')
+    await ui.press({ key: 'final:j_1' })
+    await ui.unmount()
+  }
+})
+
+test('essential metrics survive long model names at narrow widths', async ($, on) => {
+  const world = createWorld()
+  world.jobIds.add('j_1')
+  setJob(world, 'j_1', {
+    status: 'succeeded',
+    effort: 'max',
+    model: '~deepseek/deepseek-flash-latest',
+    costUsd: 0.03,
+    steps: 21,
+    toolCalls: 32,
+    startedAt: '2026-10-20T15:00:00.000Z',
+    finishedAt: '2026-10-20T15:01:42.000Z',
+  })
+  installMocks(on, world)
+  await start($)
+  for (const width of [24, 30, 38, 58, 90]) {
+    const ui = await $.ui.mount({
+      ...PANE,
+      props: { ...PANE.props, bodyColumns: width },
+    })
+    const metrics = await ui.find({
+      type: 'Text',
+      text: /^effort max · 1m42s · \$0.03$/,
+    })
+    expect(metrics?.text).toContain('effort max')
+    expect(metrics?.text).toContain('1m42s')
+    expect(metrics?.text).toContain('$0.03')
+    expect(metrics?.text).not.toContain('…')
+    expect(metrics?.props.wrap).toBe('wrap')
+    expect((await ui.find({ key: 'j_1' }))?.props.width).toBe(width)
+    await ui.unmount()
+  }
+})
+
+test('terminal sections prioritize result and toggle independently across refreshes', async ($, on) => {
+  const world = createWorld()
+  world.jobIds.add('j_1')
+  setJob(world, 'j_1', {
+    status: 'succeeded',
+    profile: 'work-openrouter',
+    usage: { inputTokens: 1234 },
+  })
+  putFile(world, finalPath(world, 'j_1'), 'Full result', 2)
+  putFile(
+    world,
+    eventsPath(world, 'j_1'),
+    '{"type":"tool_call","callId":"c1","tool":"bash","input":{"command":"pnpm test"}}',
+    2,
+  )
+  const { clock } = installMocks(on, world)
+  await start($)
+  const ui = await mountPane($)
+  await ui.press({ key: 'job:j_1' })
+  await clock.advance(1000)
+  expect(await ui.find({ type: 'Markdown', text: 'Full result' })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /pnpm test/ })).toBeUndefined()
+  expect(
+    await ui.find({ type: 'Text', text: /profile\/provider/ }),
+  ).toBeUndefined()
+  expect(await ui.find({ type: 'Text', text: /^in 1\.2k$/ })).toBeUndefined()
+  const buttons = await ui.findAll({ type: 'Button' })
+  const resultIndex = buttons.findIndex(
+    item => item.key === 'section-toggle:j_1:result',
+  )
+  const activityIndex = buttons.findIndex(
+    item => item.key === 'section-toggle:j_1:activity',
+  )
+  expect(resultIndex).toBeGreaterThan(-1)
+  expect(activityIndex).toBeGreaterThan(resultIndex)
+  await ui.press({ key: 'section-toggle:j_1:activity' })
+  expect(await ui.find({ type: 'Text', text: /pnpm test/ })).toBeDefined()
+  await ui.press({ key: 'section-toggle:j_1:details' })
+  await ui.press({ key: 'section-toggle:j_1:usage' })
+  await ui.press({ key: 'section-toggle:j_1:result' })
+  await clock.advance(1000)
+  expect(await ui.find({ type: 'Markdown' })).toBeUndefined()
+  expect(
+    await ui.find({ type: 'Text', text: /profile\/provider/ }),
+  ).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /^in 1\.2k$/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /pnpm test/ })).toBeDefined()
+  await ui.unmount()
+})
+
+test('running activity abbreviates the worktree and exposes the complete original command', async ($, on) => {
+  const world = createWorld()
+  world.jobIds.add('j_1')
+  setJob(world, 'j_1', {
+    status: 'running',
+    worktree: { path: '/state/worktrees/j_1', repoRoot: '/repo' },
+  })
+  const command =
+    'cd /state/worktrees/j_1 && pnpm test ' +
+    '--argument '.repeat(25) +
+    'END-MARKER'
+  putFile(
+    world,
+    eventsPath(world, 'j_1'),
+    JSON.stringify({
+      type: 'tool_call',
+      callId: 'c1',
+      tool: 'bash',
+      input: { command },
+    }),
+    2,
+  )
+  const { clock } = installMocks(on, world)
+  await start($)
+  const ui = await mountPane($)
+  await ui.press({ key: 'job:j_1' })
+  await clock.advance(1000)
+  expect(
+    await ui.find({ type: 'Text', text: /^◌ bash · pnpm test/ }),
+  ).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /END-MARKER/ })).toBeUndefined()
+  await ui.press({ key: 'activity-detail:j_1:c1' })
+  expect(
+    await ui.find({ type: 'Text', text: new RegExp('^' + command + '$') }),
+  ).toBeDefined()
+  await ui.press({ key: 'activity-detail:j_1:c1' })
+  expect(await ui.find({ type: 'Text', text: /END-MARKER/ })).toBeUndefined()
+  await ui.unmount()
+})
+
+test('section defaults follow status transitions but explicit choices survive', async ($, on) => {
+  const world = createWorld()
+  world.jobIds.add('j_1')
+  setJob(world, 'j_1', { status: 'running' })
+  const { clock } = installMocks(on, world)
+  await start($)
+  const ui = await mountPane($)
+  await ui.press({ key: 'job:j_1' })
+  expect(
+    (await ui.find({ key: 'section-toggle:j_1:activity' }))?.text,
+  ).toContain('▼ Activity')
+  setJob(
+    world,
+    'j_1',
+    {
+      status: 'failed',
+      reason: 'test_failure',
+      errorMessage:
+        'A long error message ' + 'full detail '.repeat(15) + 'END-ERROR',
+    },
+    2,
+  )
+  await clock.advance(1000)
+  expect(
+    (await ui.find({ key: 'section-toggle:j_1:activity' }))?.text,
+  ).toContain('▶ Activity')
+  expect((await ui.find({ key: 'section-toggle:j_1:result' }))?.text).toBe(
+    '▼ Error',
+  )
+  expect(await ui.find({ type: 'Text', text: /END-ERROR/ })).toBeDefined()
+  const sections = (await ui.findAll({ type: 'Button' })).filter(item =>
+    item.key?.startsWith('section-toggle:'),
+  )
+  expect(sections[0]?.key).toBe('section-toggle:j_1:result')
+  await ui.press({ key: 'section-toggle:j_1:activity' })
+  await clock.advance(1000)
+  expect(
+    (await ui.find({ key: 'section-toggle:j_1:activity' }))?.text,
+  ).toContain('▼ Activity')
+  await ui.press({ key: 'job:j_1' })
+  await ui.press({ key: 'job:j_1' })
+  expect(
+    (await ui.find({ key: 'section-toggle:j_1:activity' }))?.text,
+  ).toContain('▼ Activity')
+  await ui.unmount()
+})
+
 test('header keeps effort visible at normal width with real long profile/model names', async ($, on) => {
   const world = createWorld()
   world.jobIds.add('j_1')
@@ -1161,7 +1477,9 @@ test('header keeps effort visible at normal width with real long profile/model n
   installMocks(on, world)
   await start($)
   const ui = await mountPane($)
-  expect(await ui.find({ type: 'Text', text: /^effort max · work-openrouter/ })).toBeDefined()
+  expect(
+    await ui.find({ type: 'Text', text: /^effort max · work-openrouter/ }),
+  ).toBeDefined()
   expect(await ui.find({ type: 'Text', text: '$0.42' })).toBeDefined()
   expect(await ui.find({ type: 'Text', text: '2.7M tok' })).toBeDefined()
   await ui.unmount()
@@ -1205,12 +1523,17 @@ test('an expanded job shows details, tokens and the header totals', async ($, on
   const ui = await mountPane($)
 
   expect(
-    await ui.find({ type: 'Text', text: new RegExp('^effort n/a · personal-deepseek') }),
+    await ui.find({
+      type: 'Text',
+      text: new RegExp('^effort n/a · personal-deepseek'),
+    }),
   ).toBeDefined()
   expect(await ui.find({ type: 'Text', text: '2.7M tok' })).toBeDefined()
   expect(await ui.find({ type: 'Text', text: '$0.42' })).toBeDefined()
 
   await ui.press({ key: 'job:j_1' })
+  await ui.press({ key: 'section-toggle:j_1:details' })
+  await ui.press({ key: 'section-toggle:j_1:usage' })
   expect(
     await ui.find({ type: 'Text', text: /personal-deepseek \/ deepseek/ }),
   ).toBeDefined()
@@ -1228,11 +1551,9 @@ test('an expanded job shows details, tokens and the header totals', async ($, on
   expect(await ui.find({ type: 'Text', text: '21.8k' })).toBeDefined()
   expect(await ui.find({ type: 'Text', text: '2.5M' })).toBeDefined()
   expect(await ui.find({ type: 'Text', text: '(97% hit)' })).toBeDefined()
-  expect(await ui.find({ type: 'Text', text: '1.2k' })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /^1\.2k$/ })).toBeDefined()
   expect(await ui.find({ type: 'Text', text: '300' })).toBeDefined()
-  expect(
-    await ui.find({ type: 'Text', text: 'no final.md' }),
-  ).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: 'no final.md' })).toBeDefined()
   await ui.unmount()
 })
 
@@ -1377,7 +1698,7 @@ test('an expired confirm is a new first press', async ($, on) => {
   await mocks.clock.advance(6000)
 
   expect(await ui.find({ key: 'delete:j_1' })).toBeDefined()
-  expect((await ui.find({ key: 'delete:j_1' }))?.text).toBe('delete')
+  expect((await ui.find({ key: 'delete:j_1' }))?.text).toBe('Delete worker')
   await ui.press({ key: 'delete:j_1' })
   await mocks.clock.settle()
   expect(mocks.mcpCalls).toHaveLength(0)
@@ -1583,8 +1904,8 @@ test('unrelated panes pass through', async ($, on) => {
   })
 
   const ui = await $.ui.mount({ ...PANE, requestId: 'other' })
-  expect(
-    (await ui.find({ type: 'Text', text: /engine pane/ }))?.text,
-  ).toBe('engine pane')
+  expect((await ui.find({ type: 'Text', text: /engine pane/ }))?.text).toBe(
+    'engine pane',
+  )
   await ui.unmount()
 })

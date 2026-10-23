@@ -168,6 +168,7 @@ declare module 'claude-code' {
       view: DshPaneView
       expanded: string[]
       finalExpanded: string[]
+      sectionOpen: Record<string, boolean>
       showAll: boolean
       pendingAction: DshPendingAction | null
       actionResults: DshActionResults

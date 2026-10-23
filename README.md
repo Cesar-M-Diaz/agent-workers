@@ -284,31 +284,41 @@ by any session show up without an MCP round trip.
   cut. The border and badge follow the status; terminal cards other than
   failures are drawn with a dim border so running and failed work stands out.
 - **Collapsed:** `▶/▼ label` on the left and a status badge on the right, then
-  `model · effort max · 3m12s · $0.09 · 12 steps · 18 tools` (unknown effort
-  reads `effort n/a`; other missing pieces are omitted). A
+  an always-visible `effort max · 3m12s · $0.09` row, with the model and
+  `12 steps · 18 tools` on separate rows. Text wraps to the pane width rather
+  than letting long model names hide essential metrics. Unknown effort reads
+  `effort n/a`; other missing pieces are omitted. A
   running card adds its latest activity and freshness, for example
   `◌ bash · pnpm test · 3s ago`; after 90 seconds without an event it shows
   `⚠ no events for 2m` in the warning color. Current MCP watchdog alerts are
   shown as a warning line, for example
   `⚠ loop · same bash call repeated 5× in last 10`; an active card with alerts
   also gets a warning-colored border.
-- **Expanded:**
-  - `─ activity`: the last 8 tool calls with `✓` completed, `✗` failed and `◌`
-    waiting glyphs, the tool in bold and its summary dim.
-  - `─ tools`: the top 5 tools by call count, for example
-    `bash 54 · read 20 · edit 8 · grep 6`.
-  - `─ says` (running only): the last assistant `text` event, up to 3 lines.
-  - `─ details`: profile/provider, access and isolation, branch and base
-    commit, group, start time and duration, turn-end kind, and malformed-line
-    count when present.
-  - `─ tokens`: input/output/cache counts and cache-hit percentage, reasoning
-    tokens, and cost.
-  - `─ result`: `final.md` rendered as Markdown for a succeeded job, with a
-    `more` / `less` toggle (14 lines preview, 200-line cap); a nested
-    error-colored block with reason, error message and the last 3 stderr lines
-    for a failed, timed-out or interrupted job.
-  - Actions to `copy id`, `copy branch`, and — for terminal jobs only —
-    `cleanup` (when the worktree exists and is not cleaned) and `delete`.
+- **Expanded:** independently collapsible sections preserve their open/closed
+  choices across refreshes and card collapse/reopen.
+  - **Result / Error** comes first for finished jobs and opens by default.
+    Succeeded jobs render `final.md` as Markdown with a `more` / `less` toggle
+    (14-line preview, 200-line cap). Paragraph breaks and full horizontal text
+    are preserved, including in the preview. Pipe tables become labeled records
+    (one wrapping field per column), avoiding broken terminal-width borders;
+    cell Markdown and every row remain available. Fenced code examples are
+    left unchanged. Failed, timed-out and interrupted
+    jobs show an error-colored block with reason, error message and the last
+    3 stderr lines; long error text wraps instead of being cut.
+  - **Activity (N)** opens by default while running and folds by default after
+    completion. It includes the latest 8 calls, with `✓` completed, `✗` failed
+    and `◌` waiting glyphs, plus tool counts and the last assistant text.
+    Workspace paths are relative and redundant `cd <workspace> &&` prefixes
+    are omitted. Long previews are bounded; `Show original` reveals the
+    complete original command/path, including any abbreviated prefix.
+  - **Usage** starts folded: input/output/cache counts, cache-hit percentage,
+    reasoning tokens and cost.
+  - **Details** starts folded: profile/provider, access and isolation, branch
+    and base commit, group, start time and duration, turn-end kind, and
+    malformed-line count when present.
+  - `Copy ID` and `Copy branch` are separate from terminal-only management
+    actions: `Clean worktree` (when it exists and is not cleaned) and
+    `Delete worker`. Narrow panels stack actions rather than overflowing.
     Every destructive action needs a second press within five seconds:
     `confirm delete?` / `confirm cleanup?` turns warning-colored. If the tool
     reports a dirty or preserved worktree, the card shows
@@ -380,7 +390,7 @@ assistant `text` event, and the last `error` message. Events are read for every
 active job and for an expanded job of any status; terminal events are read once,
 and their unchanged mtime skips them on later refreshes.
 
-The collapsed meta line comes from `job.json`: `model`, elapsed time from
+The card metadata rows come from `job.json`: `effort`, `model`, elapsed time from
 `startedAt` (or `createdAt`) to `finishedAt` (or now), `costUsd`, `steps` and
 `toolCalls`. Duration, token, cost, cache-hit and "ago" formatting all live in
 `hooks/jobs.ts` so they can be unit-tested.
@@ -392,17 +402,18 @@ the first 7 characters of `worktree.baseCommit` (with `(cleaned)` when
 `worktree.cleaned` is true), `groupName`, `startedAt`/duration, `turnEndKind`,
 and `malformedLines`. `alerts` from `job.json` are normalized to their `kind`,
 `message` and optional `since`, and malformed entries are dropped before they
-reach the renderer. The `tokens` section uses `usage.inputTokens`,
+reach the renderer. The `Usage` section uses `usage.inputTokens`,
 `outputTokens`, `cacheReadTokens`, `cacheWriteTokens`, `reasoningTokens` and
 `costUsd`; the cache-hit percentage is `cacheReadTokens / (inputTokens +
 cacheReadTokens)`.
 
-For a succeeded job, `final.md` is kept to its first 200 non-empty lines. The
-`result` section shows the first 14 non-empty lines through the Markdown
-element; `more` swaps in the full kept text and `less` returns to the preview.
+For a succeeded job, `final.md` is kept to its first 200 lines, preserving
+blank lines and indentation. The `Result` section shows the first 14 lines
+through the Markdown element without truncating lines to the panel width;
+`more` swaps in the full kept text and `less` returns to the preview.
 For a failed, timed-out or interrupted job, the nested result block shows
 `reason`, up to 4 lines of `errorMessage`, and the last 3 lines of
-`stderrTail`. The `copy id` and `copy branch` buttons pass the press surface to
+`stderrTail`. The `Copy ID` and `Copy branch` buttons pass the press surface to
 `$.ui.copy`.
 
 **DSH "steps" are model-loop iterations, not named planned steps.** There is

@@ -1,6 +1,6 @@
 {
   "name": "agent-workers",
-  "version": "0.6.0",
+  "version": "0.7.0",
   "description": "Run DeepSeek Harness (dsh) or pi headless workers in parallel, with a live dashboard, a cleanup-aware skill, slash commands, and a native pane.",
   "author": {
     "name": "Cesar-M-Diaz"
